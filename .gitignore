@@ -1,0 +1,11 @@
+# Never commit server credentials or machine-local runtime state.
+network.lua
+settings/*.lua
+*.cert
+*.key
+server-pids.json
+*.log
+
+__pycache__/
+*.pyc
+~$*
