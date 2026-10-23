@@ -1,0 +1,173 @@
+diff --git a/src/map/ai/ai_container.cpp b/src/map/ai/ai_container.cpp
+index b7a1a433f0..c121d4b900 100644
+--- a/src/map/ai/ai_container.cpp
++++ b/src/map/ai/ai_container.cpp
+@@ -492,7 +492,9 @@ auto CAIContainer::Tick(const timer::time_point tick) -> Task<void>
+     ActionQueue.checkAction(tick);
+ 
+     // check pathfinding only if there is no controller to do it
+-    if (!Controller && CanFollowPath() && PEntity->GetLocalVar("pauseNPCPathing") == 0)
++    // WORLDBOTS: headless world bots are server-driven, so they follow paths like NPCs despite their player controller
++    const bool worldbot = PEntity->objtype == TYPE_PC && static_cast<CCharEntity*>(PEntity)->m_worldbot;
++    if ((!Controller || worldbot) && CanFollowPath() && PEntity->GetLocalVar("pauseNPCPathing") == 0)
+     {
+         PathFind->FollowPath(tick);
+         if (PathFind->OnPoint())
+diff --git a/src/map/ai/states/magic_state.cpp b/src/map/ai/states/magic_state.cpp
+index 1b69db1790..e9902fd3ff 100644
+--- a/src/map/ai/states/magic_state.cpp
++++ b/src/map/ai/states/magic_state.cpp
+@@ -96,6 +96,9 @@ auto CMagicState::init() -> StateErrorOr<void>
+         return Error{ std::make_unique<GP_SERV_COMMAND_BATTLE_MESSAGE>(m_PEntity, PTarget, static_cast<uint16>(m_PSpell->getID()), 0, errorMsg == 1 ? MsgBasic::CannotCastSpell : static_cast<MsgBasic>(errorMsg)) };
+     }
+ 
++    // WORLDBOTS: before the cast time is computed, so a pre-cast gear swap's Fast Cast applies to this cast
++    m_PEntity->PAI->EventHandler.triggerListener("MAGIC_STATE_ENTER", m_PEntity, PTarget, m_PSpell.get());
++
+     m_castTime = battleutils::CalculateSpellCastTime(m_PEntity, this);
+     m_startPos = m_PEntity->loc.p;
+ 
+diff --git a/src/map/ai/states/mobskill_state.cpp b/src/map/ai/states/mobskill_state.cpp
+index a1d9aebfa7..64453ca719 100644
+--- a/src/map/ai/states/mobskill_state.cpp
++++ b/src/map/ai/states/mobskill_state.cpp
+@@ -20,6 +20,7 @@
+ */
+ 
+ #include "mobskill_state.h"
++#include "worldbots_hooks.h" // WORLDBOTS
+ 
+ #include "action/action.h"
+ #include "action/interrupts.h"
+@@ -130,6 +131,10 @@ auto CMobSkillState::init() -> StateErrorOr<void>
+         battleutils::turnTowardsTarget(m_PEntity, PTarget);
+     }
+     m_PEntity->PAI->EventHandler.triggerListener("WEAPONSKILL_STATE_ENTER", m_PEntity, m_PSkill->getID());
++    if (worldbots::onMobSkillStart) // WORLDBOTS: TP-move windup with its real cast time (stun/interrupt timing)
++    {
++        worldbots::onMobSkillStart(m_PEntity, std::chrono::duration_cast<std::chrono::milliseconds>(m_castTime));
++    }
+     SpendCost();
+ 
+     // Probably ok to do this for all skills, but there's no need
+diff --git a/src/map/ai/states/range_state.cpp b/src/map/ai/states/range_state.cpp
+index 5434b447b8..56ec157aed 100644
+--- a/src/map/ai/states/range_state.cpp
++++ b/src/map/ai/states/range_state.cpp
+@@ -69,6 +69,9 @@ auto CRangeState::init() -> StateErrorOr<void>
+         return refuseWithErrorMsg();
+     }
+ 
++    // WORLDBOTS: before the delay is computed, so a pre-shot gear swap's Snapshot applies to this shot
++    m_PEntity->PAI->EventHandler.triggerListener("RANGE_STATE_ENTER", m_PEntity, PTarget);
++
+     // https://www.bg-wiki.com/ffxi/Delay#Ranged_Delay
+     // GetRangedDelayReduction is 2 of the 3 steps of `Ranged Weapon Delay x (1 - Snapshot) x (1 - Velocity Shot) x (1 - Rapid Shot)`
+     // If Rapid Shot fires it will do the third multiplicative step
+diff --git a/src/map/ai/states/weaponskill_state.cpp b/src/map/ai/states/weaponskill_state.cpp
+index f5eee2997b..2b55cc98c0 100644
+--- a/src/map/ai/states/weaponskill_state.cpp
++++ b/src/map/ai/states/weaponskill_state.cpp
+@@ -86,6 +86,9 @@ auto CWeaponSkillState::init() -> StateErrorOr<void>
+ 
+     m_PEntity->loc.zone->PushPacket(m_PEntity, CHAR_INRANGE_SELF, std::make_unique<GP_SERV_COMMAND_BATTLE2>(action));
+ 
++    // WORLDBOTS: start of a player weaponskill, as the mob/pet path already signals (pre-WS gear swap)
++    m_PEntity->PAI->EventHandler.triggerListener("WEAPONSKILL_STATE_ENTER", m_PEntity, m_PSkill->getID());
++
+     return Success();
+ }
+ 
+diff --git a/src/map/entities/char_entity.h b/src/map/entities/char_entity.h
+index a94fe90a5f..42632d3ee8 100644
+--- a/src/map/entities/char_entity.h
++++ b/src/map/entities/char_entity.h
+@@ -365,6 +365,7 @@ class CCharEntity final : public CBattleEntity
+ {
+ public:
+     uint32 accid{}; // Account ID associated with the character.
++    bool   m_worldbot{ false }; // WORLDBOTS: server-driven headless character (follows server-side paths)
+ 
+     MapSession* PSession = nullptr;
+ 
+diff --git a/src/map/map_engine.cpp b/src/map/map_engine.cpp
+index 4ffdf8f244..7440439a5b 100644
+--- a/src/map/map_engine.cpp
++++ b/src/map/map_engine.cpp
+@@ -20,6 +20,7 @@
+ */
+ 
+ #include "map_engine.h"
++#include "worldbots_hooks.h" // WORLDBOTS
+ 
+ #include "common/debug.h"
+ #include "common/ipp.h"
+@@ -86,6 +87,7 @@ MapEngine::MapEngine(Application& application, MapConfig& config)
+ , networking_(std::make_unique<MapNetworking>(scheduler_, *mapStatistics_, config))
+ , config_(config)
+ {
++    worldbots::engine = this; // WORLDBOTS
+ }
+ 
+ MapEngine::~MapEngine()
+diff --git a/src/map/packets/s2c/0x028_battle2.cpp b/src/map/packets/s2c/0x028_battle2.cpp
+index a6a2b0593e..5dc8f1d946 100644
+--- a/src/map/packets/s2c/0x028_battle2.cpp
++++ b/src/map/packets/s2c/0x028_battle2.cpp
+@@ -20,6 +20,7 @@
+ */
+ 
+ #include "0x028_battle2.h"
++#include "worldbots_hooks.h" // WORLDBOTS
+ 
+ #include "action/action.h"
+ #include "common/lua.h"
+@@ -211,4 +212,8 @@ auto GP_SERV_COMMAND_BATTLE2::unpack() -> sol::table
+ GP_SERV_COMMAND_BATTLE2::GP_SERV_COMMAND_BATTLE2(action_t& action)
+ {
+     pack(action);
++    if (worldbots::onActionResult) // WORLDBOTS: every broadcast action, for the bot AI
++    {
++        worldbots::onActionResult(action);
++    }
+ }
+diff --git a/src/map/worldbots_hooks.h b/src/map/worldbots_hooks.h
+new file mode 100644
+index 0000000000..a37af68e81
+--- /dev/null
++++ b/src/map/worldbots_hooks.h
+@@ -0,0 +1,34 @@
++/*
++===========================================================================
++
++  FFXI-Forever world bots (github.com/corey-allen/ffxi-forever): core hook points.
++
++  The only coupling between the Phoenix core and modules/worldbots. The core sets `engine` and calls the optional
++  callbacks; the module fills them in at startup. Everything else lives in the module.
++  Applied by patches/phoenix-b48e2d4e/worldbots-core.patch.
++
++===========================================================================
++*/
++
++#pragma once
++
++#include <chrono>
++#include <functional>
++
++class MapEngine;
++class CBaseEntity;
++struct action_t;
++
++namespace worldbots
++{
++
++// Set by MapEngine's constructor: lets the module reach sessions and zones.
++inline MapEngine* engine = nullptr;
++
++// Every action broadcast (GP_SERV_COMMAND_BATTLE2): the bot AI learns outcomes (damage, skillchains, misses).
++inline std::function<void(const action_t&)> onActionResult;
++
++// A monster starts a TP move, with its real cast time: the bot AI times stuns and interrupts.
++inline std::function<void(CBaseEntity*, std::chrono::milliseconds)> onMobSkillStart;
++
++} // namespace worldbots
