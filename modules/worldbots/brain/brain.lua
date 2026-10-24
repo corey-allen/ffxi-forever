@@ -272,6 +272,20 @@ local SC_PAIRS =
     { open = xi.job.RDM, openWS = 'Fast Blade', close = xi.job.WAR, closeWS = 'Raging Axe' }, -- Scission > Detonation
 }
 
+-- Skillchain pairs for the jobs present: { { priority, openName, openWS, closeName, closeWS } } (one pair).
+local function skillchainsFor(bots)
+    local byJob = {}
+    for _, m in ipairs(bots) do
+        byJob[m.rec.row.job] = byJob[m.rec.row.job] or m.bot
+    end
+    for i, p in ipairs(SC_PAIRS) do
+        if byJob[p.open] and byJob[p.close] then
+            return { { priority = i, openName = byJob[p.open]:getName(), openWS = p.openWS, closeName = byJob[p.close]:getName(), closeWS = p.closeWS } }
+        end
+    end
+    return {}
+end
+
 function brain.formParty(group)
     table.sort(group, function(a, b)
         local ta = PARTY_ROLE[a.rec.row.job] == Role.Tank and 0 or 1
@@ -285,25 +299,17 @@ function brain.formParty(group)
     local key    = 'party:' .. leader.rec.charId
     leader.bot:formPartyAlone()
     local members = {}
-    local byJob   = {}
     for i, m in ipairs(group) do
         if i > 1 then
             leader.bot:partyAddMember(m.bot)
         end
         table.insert(members, { entity = m.bot, role = PARTY_ROLE[m.rec.row.job] or Role.Melee })
-        byJob[m.rec.row.job] = m.bot
         m.rec.mem.party = key
         m.rec.mem.fight = nil
         m.bot:worldbotSetParent(leader.rec.charId)
         combatOnly(m.bot)
     end
-    local sc = {}
-    for i, p in ipairs(SC_PAIRS) do
-        if byJob[p.open] and byJob[p.close] then
-            table.insert(sc, { priority = i, openName = byJob[p.open]:getName(), openWS = p.openWS, closeName = byJob[p.close]:getName(), closeWS = p.closeWS })
-            break -- one pair at a time; Nate's AI rotates pairs it is given
-        end
-    end
+    local sc = skillchainsFor(group)
     context.form(key, members, { sc = sc })
     local names = {}
     for _, m in ipairs(group) do
@@ -316,8 +322,7 @@ end
 
 -- Rebuild a party's context from its members' current entities (after one of them zoned).
 function brain.refreshParty(key)
-    local members, leaderId = {}, tonumber(key:match('%d+'))
-    local sc = context.byKey[key] and context.byKey[key].sc or {}
+    local members, present, leaderId = {}, {}, tonumber(key:match('%d+'))
     for _, other in ipairs(brain.list) do
         if other.mem.party == key then
             local bot = WorldbotGet(other.charId)
@@ -328,11 +333,12 @@ function brain.refreshParty(key)
                 else
                     table.insert(members, m)
                 end
+                table.insert(present, { rec = other, bot = bot })
             end
         end
     end
     if #members > 0 then
-        context.form(key, members, { sc = sc })
+        context.form(key, members, { sc = skillchainsFor(present) })
     end
 end
 
@@ -360,8 +366,60 @@ function brain.leaveParty(rec, reason)
     end
 end
 
+-- A party's members: { { rec, bot }, ... } (online, in the brain).
+local function partyMembers(key)
+    local out = {}
+    for _, other in ipairs(brain.list) do
+        if other.mem.party == key then
+            local bot = WorldbotGet(other.charId)
+            if bot then
+                table.insert(out, { rec = other, bot = bot })
+            end
+        end
+    end
+    return out
+end
+
+-- An eligible solo bot joins its nation's party with room, when its level fits (as players filled a slot).
+local function joinExisting(c)
+    for _, other in ipairs(brain.list) do
+        local key = other.mem.party
+        if key and other.row.nation == c.rec.row.nation and key == 'party:' .. other.charId then -- each party once, via its leader
+            local members = partyMembers(key)
+            if #members < 6 then
+                local lo, hi = math.huge, 0
+                for _, m in ipairs(members) do
+                    lo, hi = math.min(lo, m.bot:getMainLvl()), math.max(hi, m.bot:getMainLvl())
+                end
+                local lv = c.bot:getMainLvl()
+                if math.max(hi, lv) - math.min(lo, lv) <= config.PARTY_LEVEL_SPREAD then
+                    local leader = WorldbotGet(other.charId)
+                    leader:partyAddMember(c.bot)
+                    c.rec.mem.party = key
+                    c.rec.mem.fight = nil
+                    c.bot:worldbotSetParent(other.charId)
+                    combatOnly(c.bot)
+                    brain.refreshParty(key)
+                    for _, m in ipairs(partyMembers(key)) do
+                        log(m.rec, 'party', string.format('%s (%s lv%d) joined %s', c.bot:getName(), tostring(c.rec.row.job), lv, key))
+                    end
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 function brain.updateParties()
     for _, group in pairs(partyCandidates()) do
+        local rest = {}
+        for _, c in ipairs(group) do
+            if not joinExisting(c) then
+                table.insert(rest, c)
+            end
+        end
+        group = rest
         table.sort(group, function(a, b) return a.bot:getMainLvl() > b.bot:getMainLvl() end)
         -- Take runs of bots within PARTY_LEVEL_SPREAD of each other, up to 6.
         local i = 1

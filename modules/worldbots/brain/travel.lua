@@ -162,7 +162,9 @@ function travel.toZone(bot, st, zoneId, now, avoid)
         st.route = nil
         return 'noroute'
     end
-    local d = dist(bot, line.x, line.y, line.z)
+    -- Horizontal distance, as the server's zone-line check (0x05E) measures it: a line's box centre can sit
+    -- several yalms above or below the ground.
+    local d = flatDist(bot, line.x, line.z)
     if d <= LINE_USE_DIST then
         if bot:worldbotUseZoneLine(line.id) then
             st.route = nil -- recomputed from the next zone

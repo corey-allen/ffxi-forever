@@ -84,21 +84,33 @@ local function countItem(bot, itemId)
     return n, slot
 end
 
--- Items the economy must not sell: the plan's tool and every recipe ingredient and crystal.
-function crafting.keep(itemId)
-    for _, plan in pairs(PLAN) do
-        if itemId == plan.tool then
+-- Items the economy must not sell for this bot: its craft's tool, crystals and materials.
+function crafting.keepFor(rec, itemId)
+    local plan = rec and PLAN[rec.row.nation]
+    if plan == nil then
+        return false
+    end
+    if itemId == plan.tool then
+        return true
+    end
+    for _, r in ipairs(plan.recipes) do
+        if itemId == r.crystal then
             return true
         end
-        for _, r in ipairs(plan.recipes) do
-            if itemId == r.crystal then
+        for _, id in ipairs(r.items) do
+            if id == itemId then
                 return true
             end
-            for _, id in ipairs(r.items) do
-                if id == itemId then
-                    return true
-                end
-            end
+        end
+    end
+    return false
+end
+
+-- Any nation's craft material (for reports and tools that have no bot at hand).
+function crafting.keep(itemId)
+    for nation in pairs(PLAN) do
+        if crafting.keepFor({ row = { nation = nation } }, itemId) then
+            return true
         end
     end
     return false
@@ -117,9 +129,11 @@ local function hasSignet(bot)
     return bot:hasStatusEffect(xi.effect.SIGNET)
 end
 
+-- NPC trades and talks are accepted within 6 yalms; gathering points often sit against rock or trees
+-- the navmesh can't reach, so 5 yalms (3D) counts as there.
 local function walkToNpc(rec, bot, npc, t)
     local d = travel.dist(bot, npc:getXPos(), npc:getYPos(), npc:getZPos())
-    if d <= 3.0 then
+    if d <= 5.0 then
         return 'arrived'
     end
     return travel.walkTo(bot, rec.mem, npc:getXPos(), npc:getYPos(), npc:getZPos(), 2.5, t)
@@ -218,10 +232,11 @@ function gather.step(rec, bot, t)
         end
         return 'running'
     end
-    -- Nearest gathering point.
+    -- Nearest gathering point the bot has not failed to reach.
+    g.unreachable = g.unreachable or {}
     local best, bestD = nil, math.huge
     for _, npc in ipairs(bot:getZone():queryEntitiesByName(plan.point)) do
-        if npc:isSpawned() then
+        if npc:isSpawned() and t >= (g.unreachable[npc:getID()] or 0) then
             local d = travel.dist(bot, npc:getXPos(), npc:getYPos(), npc:getZPos())
             if d < bestD then
                 best, bestD = npc, d
@@ -231,7 +246,12 @@ function gather.step(rec, bot, t)
     if best == nil then
         return gatherDone(rec, bot, t, 'no gathering point')
     end
-    if walkToNpc(rec, bot, best, t) ~= 'arrived' then
+    local walk = walkToNpc(rec, bot, best, t)
+    if walk == 'giveup' then
+        g.unreachable[best:getID()] = t + 600
+        return 'running'
+    end
+    if walk ~= 'arrived' then
         return 'running'
     end
     if t < (g.nextTrade or 0) then

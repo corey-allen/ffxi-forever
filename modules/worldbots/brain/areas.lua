@@ -82,7 +82,7 @@ function areas.levelWindow(level, inParty, caster)
         return level, level + 4
     end
     if caster then
-        return math.max(1, level - 4), level
+        return math.max(1, level - 4), math.max(1, level - 1) -- even matches killed too many level-3 Tarutaru mages
     end
     if level <= 3 then
         return 1, level + 1

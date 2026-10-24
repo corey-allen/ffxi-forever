@@ -12,3 +12,5 @@ __pycache__/
 
 # World-bots dev scripts (modules/worldbots/dev/run.lua is run once by the server)
 modules/worldbots/dev/
+# World-bot shop knowledge (learned by bots at runtime)
+modules/worldbots/config/shops/

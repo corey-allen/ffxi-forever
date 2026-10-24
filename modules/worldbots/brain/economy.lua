@@ -17,10 +17,9 @@ local gear   = require('modules/worldbots/brain/gear')
 local economy = {}
 
 local SCROLL_FIRST, SCROLL_LAST = 4609, 5119 -- white/black magic and song scrolls: spell id = item id - 4608
-local CRYSTALS = { [4096] = true, [4097] = true, [4098] = true, [4099] = true, [4100] = true, [4101] = true, [4102] = true, [4103] = true }
 local KEEP     = { [536] = true } -- Adventurer's Coupon (traded in later, as players did)
 
-local TALK_DIST       = 3.0
+local TALK_DIST       = 5.0 -- the server accepts a talk within 6 yalms; vendors often stand behind counters
 local TRIP_MAX_SECONDS = 1200
 local RESERVE_GIL     = 10 -- never spend the last of it
 
@@ -36,6 +35,44 @@ economy.CITIES = CITIES
 economy.stock     = {} -- npcId -> { name, zone, at, items = { { index, itemId, price } } }
 economy.noShop    = {} -- npcId -> true: talked to, no shop opened (or an event)
 local vendorCache = {} -- zoneId -> { name, ... }
+local magicVendor = {} -- vendor name -> true: its script sells spell scrolls (a "magic shop", common knowledge)
+
+local SURVEYS_PER_TRIP = 6 -- unknown vendors one trip looks at before going home
+local KNOWLEDGE_FILE   = 'modules/worldbots/config/shops/shops.json'
+local json             = require('modules/worldbots/lib/json')
+
+-- Shop knowledge survives restarts (a local file, not game data).
+function economy.loadKnowledge()
+    local f = io.open(KNOWLEDGE_FILE, 'r')
+    if f == nil then
+        return
+    end
+    local ok, data = pcall(function() return json:decode(f:read('*a')) end)
+    f:close()
+    if ok and type(data) == 'table' then
+        for id, v in pairs(data.stock or {}) do
+            economy.stock[tonumber(id)] = v
+        end
+        for id, v in pairs(data.noShop or {}) do
+            economy.noShop[tonumber(id)] = v
+        end
+    end
+end
+
+function economy.saveKnowledge()
+    local stock, noShop = {}, {}
+    for id, v in pairs(economy.stock) do
+        stock[tostring(id)] = v
+    end
+    for id, v in pairs(economy.noShop) do
+        noShop[tostring(id)] = v
+    end
+    local f = io.open(KNOWLEDGE_FILE, 'w')
+    if f then
+        f:write(json:encode({ stock = stock, noShop = noShop }))
+        f:close()
+    end
+end
 
 -- Vendor NPC names in a zone: their scripts open a shop (xi.shop.*).
 function economy.vendorNames(zoneId)
@@ -52,7 +89,11 @@ function economy.vendorNames(zoneId)
                 local body = f:read('*a')
                 f:close()
                 if body:find('xi%.shop%.') then
-                    table.insert(names, (file:gsub('%.lua$', '')))
+                    local name = file:gsub('%.lua$', '')
+                    table.insert(names, name)
+                    if body:find('SCROLL_OF_') then
+                        magicVendor[name] = true
+                    end
                 end
             end
         end
@@ -127,7 +168,7 @@ function economy.sellable(bot, keep)
     for _, item in ipairs(bot:worldbotInventory()) do
         local id   = item.itemId
         local info = WorldbotItemInfo(id)
-        local skip = equipped[id] or KEEP[id] or CRYSTALS[id] or (id >= SCROLL_FIRST and id <= SCROLL_LAST)
+        local skip = equipped[id] or KEEP[id] or (id >= SCROLL_FIRST and id <= SCROLL_LAST)
             or info == nil or info.noSale or info.rare or info.exclusive
             or (gear.slotOf(info) and bot:canEquipItem(id, false)) -- gear this job can use, now or later
             or (keep and keep(id))
@@ -136,6 +177,14 @@ function economy.sellable(bot, keep)
         end
     end
     return out
+end
+
+-- What this bot keeps out of the sale: its own craft's tool, crystals and materials (other crystals sell).
+function economy.keepFor(rec)
+    local crafting = xi.worldbots.crafting
+    return function(itemId)
+        return crafting ~= nil and crafting.keepFor ~= nil and crafting.keepFor(rec, itemId)
+    end
 end
 
 local function freeSlots(bot)
@@ -153,19 +202,34 @@ local function stockHasWanted(rec, bot, items)
     return false
 end
 
-function economy.worthVisiting(rec, bot, npcId, sh)
+local function learnsSpells(rec)
+    return rec.row.job == xi.job.WHM or rec.row.job == xi.job.BLM or rec.row.job == xi.job.RDM
+end
+
+-- An unknown vendor is worth a look while the trip has surveys left: magic shops first for spellcasters.
+local function worthSurveying(rec, name, sh)
+    if (sh.surveys or 0) >= SURVEYS_PER_TRIP then
+        return false
+    end
+    if learnsSpells(rec) and magicVendor[name] then
+        return true
+    end
+    return (sh.surveys or 0) < (learnsSpells(rec) and 2 or SURVEYS_PER_TRIP)
+end
+
+function economy.worthVisiting(rec, bot, npcId, sh, name)
     local known = economy.stock[npcId]
     if known == nil then
-        return true -- never seen: look (stock knowledge is shared by all bots)
+        return worthSurveying(rec, name, sh) -- never seen (stock knowledge is shared by all bots)
     end
-    if not sh.sold and #economy.sellable(bot, xi.worldbots.crafting and xi.worldbots.crafting.keep) > 0 then
+    if not sh.sold and #economy.sellable(bot, economy.keepFor(rec)) > 0 then
         return true
     end
     return stockHasWanted(rec, bot, known.items)
 end
 
 -- Another city worth the walk: unknown vendors there, or a known vendor with something wanted.
-function economy.cityWorthVisiting(rec, bot, zoneId)
+function economy.cityWorthVisiting(rec, bot, zoneId, sh)
     local zone = GetZone(zoneId)
     if zone == nil then
         return false
@@ -175,7 +239,7 @@ function economy.cityWorthVisiting(rec, bot, zoneId)
             local id = npc:getID()
             if not economy.noShop[id] then
                 local known = economy.stock[id]
-                if known == nil or stockHasWanted(rec, bot, known.items) then
+                if (known == nil and worthSurveying(rec, name, sh)) or (known and stockHasWanted(rec, bot, known.items)) then
                     return true
                 end
             end
@@ -206,9 +270,38 @@ function act.choose(rec, bot, t)
     end
     local fullBags  = freeSlots(bot) <= 4
     local newLevels = level >= (s.lastShopLevel or 1) + 2
-    local toSell    = #economy.sellable(bot, xi.worldbots.crafting and xi.worldbots.crafting.keep)
+    local toSell    = #economy.sellable(bot, economy.keepFor(rec))
     local hasGil    = bot:getGil() >= RESERVE_GIL + 40
-    if fullBags or (newLevels and (hasGil or toSell >= 4)) then
+    -- Or: a vendor the bots know sells something this bot wants and can afford now.
+    local knownWant = false
+    if t >= (rec.mem.nextKnownWant or 0) then
+        rec.mem.nextKnownWant = t + 600
+        local mine = {}
+        for _, z in ipairs(CITIES[rec.row.nation] or {}) do
+            mine[z] = true
+        end
+        for _, v in pairs(economy.stock) do
+            if mine[v.zone] and stockHasWanted(rec, bot, v.items) then -- trips stay in the bot's own nation
+                knownWant = true
+                break
+            end
+        end
+        -- A spellcaster with some gil goes to see its nation's magic shop once it exists unvisited.
+        if not knownWant and learnsSpells(rec) and bot:getGil() >= 70 then
+            for _, zoneId in ipairs(CITIES[rec.row.nation] or {}) do
+                local zone = GetZone(zoneId)
+                for _, name in ipairs(economy.vendorNames(zoneId)) do
+                    if magicVendor[name] and zone then
+                        local npc = zone:queryEntitiesByName(name)[1]
+                        if npc and economy.stock[npc:getID()] == nil and not economy.noShop[npc:getID()] then
+                            knownWant = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if fullBags or knownWant or (newLevels and (hasGil or toSell >= 4)) then
         rec.mem.shop = { startAt = t, zoneIndex = 1, visited = {}, visits = 0, sold = false, gilStart = bot:getGil(),
                          reason = fullBags and 'bags full' or ('lv' .. level .. ' shopping') }
         return true
@@ -314,7 +407,7 @@ function act.step(rec, bot, t)
     -- known to sell something wanted, or needed to sell the loot).
     local target = nil
     for _, v in ipairs(economy.vendorsNear(bot)) do
-        if not sh.visited[v.npc:getID()] and economy.worthVisiting(rec, bot, v.npc:getID(), sh) then
+        if not sh.visited[v.npc:getID()] and economy.worthVisiting(rec, bot, v.npc:getID(), sh, v.npc:getName()) then
             target = v
             break
         end
@@ -323,7 +416,7 @@ function act.step(rec, bot, t)
         -- Nothing more here: go on only if another city of the nation may have what is wanted.
         local nextZone = nil
         for i = sh.zoneIndex + 1, #cities do
-            if economy.cityWorthVisiting(rec, bot, cities[i]) then
+            if economy.cityWorthVisiting(rec, bot, cities[i], sh) then
                 nextZone = i
                 break
             end
@@ -345,24 +438,35 @@ function act.step(rec, bot, t)
 
     sh.visited[npc:getID()] = true
     sh.visits = sh.visits + 1
+    if economy.stock[npc:getID()] == nil then
+        sh.surveys = (sh.surveys or 0) + 1
+    end
     bot:worldbotTalk(npc)
     if bot:worldbotInEvent() then
         economy.noShop[npc:getID()] = true -- an event, not a shop (regional or quest NPC)
+        economy.saveKnowledge()
         bot:worldbotEndEvent(0)
         return 'running'
     end
     local stock = bot:worldbotShopStock()
     if #stock == 0 then
         economy.noShop[npc:getID()] = true
+        economy.saveKnowledge()
         return 'running'
     end
+    local isNew = economy.stock[npc:getID()] == nil
     economy.stock[npc:getID()] = { name = npc:getName(), zone = bot:getZoneID(), at = t, items = stock }
+    if isNew then
+        economy.saveKnowledge()
+    end
     if not sh.sold then
-        sellAll(rec, bot, xi.worldbots.crafting and xi.worldbots.crafting.keep)
+        sellAll(rec, bot, economy.keepFor(rec))
         sh.sold = true
     end
     buyWanted(rec, bot, stock)
     return 'running'
 end
+
+economy.loadKnowledge()
 
 return economy
