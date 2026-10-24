@@ -6,6 +6,15 @@
 --   !worldbot list                  list spawned bots
 --   !worldbot fight <name> [mobId]  M1 test: make the bot its own solo party (tank) and fight your target or mobId
 -----------------------------------
+-- Called by the module on a new bot's first spawn, right after xi.player.charCreate:
+-- what the intro cutscene gives (charCreate leaves it to the cutscene, which bots skip).
+xi.worldbots = xi.worldbots or {}
+xi.worldbots.onFirstSpawn = function(bot)
+    if not bot:hasItem(xi.item.ADVENTURER_COUPON) then
+        bot:addItem(xi.item.ADVENTURER_COUPON)
+    end
+end
+
 ---@type TCommand
 local commandObj = {}
 
@@ -33,10 +42,10 @@ local function soloAlliance(bot)
     alliance.roleMap          = { [id] = bots.Role.Tank }
     alliance.solo             = {}
     alliance.bot              = alliance.bot or {}
-    alliance.bot[id]          = alliance.bot[id] or {}
+    bots.ensure_bot(id) -- Nate's full per-bot schema; a bare {} breaks ai_lot and others
     alliance.parties          = { { ptLeader = bot:getName(), trusts = {} } }
     alliance.assistCharId     = id
-    alliance.battleFormation  = 'off'
+    alliance.battleFormation  = 'legacy' -- 'off' means hold position
     alliance.walkingFormation = 'off'
     alliance.aggroMode        = 'off'
     bots.onSetRole(bot, bots.Role.Tank)

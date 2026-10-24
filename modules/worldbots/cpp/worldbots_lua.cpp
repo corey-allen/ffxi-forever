@@ -143,6 +143,20 @@ void dispatchActionResult(const action_t& action)
     {
         return;
     }
+    // WORLDBOTS: skip actions with no world bot as actor or target.
+    const auto involvesBot = [](CBaseEntity* PEntity)
+    {
+        return PEntity != nullptr && PEntity->objtype == TYPE_PC && static_cast<CCharEntity*>(PEntity)->m_worldbot;
+    };
+    bool relevant = involvesBot(PActor);
+    for (const auto& target : action.targets)
+    {
+        relevant = relevant || involvesBot(zoneutils::GetEntity(target.actorId));
+    }
+    if (!relevant)
+    {
+        return;
+    }
     // Same table shape as Nate's luautils::OnActionResult.
     sol::table tbl    = ::lua.create_table();
     tbl["actorId"]    = action.actorId;
@@ -183,6 +197,13 @@ void dispatchMobSkillStart(CBaseEntity* PActor, std::chrono::milliseconds castTi
 {
     sol::protected_function dispatcher = ::lua["xi"]["singleplayer"]["bots"]["onMobSkillStart"];
     if (!dispatcher.valid() || PActor == nullptr)
+    {
+        return;
+    }
+    // WORLDBOTS: only mobs fighting a world bot open interrupt windows.
+    auto* PBattle = dynamic_cast<CBattleEntity*>(PActor);
+    auto* PTarget = PBattle != nullptr ? PBattle->GetBattleTarget() : nullptr;
+    if (PTarget == nullptr || PTarget->objtype != TYPE_PC || !static_cast<CCharEntity*>(PTarget)->m_worldbot)
     {
         return;
     }
@@ -724,15 +745,29 @@ void registerLuaApi()
     });
 
     // ---- world-bot control (FFXI-Forever) -------------------------------------------------------------------------
-    ::lua.set_function("WorldbotSpawn", [](const std::string& name) -> sol::object
+    // WorldbotSpawn(name [, zoneId, x, y, z, rot]): without a zone the bot appears where it was saved.
+    ::lua.set_function("WorldbotSpawn", [](const std::string& name, sol::optional<uint16> zone, sol::optional<float> x, sol::optional<float> y,
+                                           sol::optional<float> z, sol::optional<uint8> rot) -> sol::object
     {
         const auto rset = db::preparedStmt("SELECT charid FROM chars WHERE charname = ? LIMIT 1", name);
         if (!rset || !rset->next())
         {
             return sol::lua_nil;
         }
-        auto* PBot = spawn(rset->get<uint32>("charid"), nullptr);
+        std::optional<Placement> at;
+        if (zone.has_value())
+        {
+            at = Placement{ *zone, x.value_or(0.0f), y.value_or(0.0f), z.value_or(0.0f), rot.value_or(0) };
+        }
+        auto* PBot = spawn(rset->get<uint32>("charid"), nullptr, at);
         return PBot != nullptr ? sol::make_object(::lua, CLuaBaseEntity(PBot)) : sol::lua_nil;
+    });
+    // WorldbotCreateCharacter(name, race, face, size, nation, job) -> charId, or nil and the reason.
+    ::lua.set_function("WorldbotCreateCharacter", [](const std::string& name, uint8 race, uint8 face, uint8 size, uint8 nation, uint8 job)
+    {
+        const auto result = createCharacter(name, race, face, size, nation, job);
+        return std::make_tuple(result.charId != 0 ? sol::make_object(::lua, result.charId) : sol::make_object(::lua, sol::lua_nil),
+                               result.error);
     });
     ::lua.set_function("WorldbotDespawn", [](const std::string& name) -> bool
     {

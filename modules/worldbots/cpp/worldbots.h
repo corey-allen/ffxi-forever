@@ -20,6 +20,7 @@
 #include "common/cbasetypes.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -47,18 +48,56 @@ struct BotState
     bool    spawnFinalized{ false };
 };
 
-// Spawn a character as a headless bot. parent == nullptr: ownerless, at its saved zone and position.
-// Otherwise beside `parent`, Nate's companion model. Returns the character, or nullptr on failure.
-auto spawn(uint32 charId, CCharEntity* parent) -> CCharEntity*;
+struct Placement
+{
+    uint16 zone;
+    float  x, y, z;
+    uint8  rot;
+};
+
+// Spawn a character as a headless bot. parent == nullptr: ownerless, at `at` if given, else at its saved
+// zone and position. Otherwise beside `parent`, Nate's companion model. Returns the character, or nullptr.
+auto spawn(uint32 charId, CCharEntity* parent, std::optional<Placement> at = std::nullopt) -> CCharEntity*;
 
 // Despawn a headless bot (position and state are saved by the engine). Returns true if one was found.
 auto despawn(uint32 charId) -> bool;
+
+// Zoning, as a client does it: walk to a zone line and send the zone-line packet (0x05E); the engine moves
+// the character out, and processArrivals logs it into the new zone through the login handler (0x00A).
+auto useZoneLine(CCharEntity* PChar, uint32 zoneLineId) -> bool;
+auto homePoint(CCharEntity* PChar) -> bool; // dead bots only: the death menu's "return to home point"
+auto arrive(CCharEntity* PChar) -> bool;     // run the login handler for a bot's session
+void processArrivals();
+
+// Marks world-bot accounts: not a bcrypt hash, so no password logs into them.
+inline constexpr const char* kNoLoginPassword = "!worldbot:no-login";
 
 auto isBot(const CCharEntity* PChar) -> bool;
 auto state(const CCharEntity* PChar) -> BotState*; // nullptr for non-bots
 auto bots() -> std::vector<uint32>;                // char ids of all spawned bots
 
+// Create a world-bot character in the DB (account it cannot log in with, intro-cutscene end-state).
+// Starting gear comes from xi.player.charCreate on its first spawn.
+struct CreateResult
+{
+    uint32      charId{ 0 }; // 0 on failure
+    std::string error;
+};
+auto createCharacter(const std::string& name, uint8 race, uint8 face, uint8 size, uint8 nation, uint8 job) -> CreateResult;
+
 void registerLuaApi();
+void registerRegistryLuaApi();
+void registerActionsLuaApi();
+void createTables();
+
+// Time spent in the bots' Lua tick since the last call (M7 load measurements).
+struct TickStats
+{
+    uint64 calls{ 0 };
+    uint64 micros{ 0 };
+    uint64 maxMicros{ 0 };
+};
+auto takeTickStats() -> TickStats;
 void tickZoneBots(CZone* PZone);
 void cleanupOnStartup();
 

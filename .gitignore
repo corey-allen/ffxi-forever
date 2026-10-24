@@ -9,3 +9,6 @@ server-pids.json
 __pycache__/
 *.pyc
 ~$*
+
+# World-bots dev scripts (modules/worldbots/dev/run.lua is run once by the server)
+modules/worldbots/dev/
