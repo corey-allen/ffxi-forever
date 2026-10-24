@@ -165,13 +165,19 @@ end
 function economy.sellable(bot, keep)
     local equipped = equippedSet(bot)
     local out      = {}
+    local kept     = {} -- craft materials: two stacks of each are kept, the rest sells
     for _, item in ipairs(bot:worldbotInventory()) do
         local id   = item.itemId
         local info = WorldbotItemInfo(id)
+        local keepIt = keep and keep(id)
+        if keepIt then
+            kept[id] = (kept[id] or 0) + 1
+            keepIt   = kept[id] <= 2
+        end
         local skip = equipped[id] or KEEP[id] or (id >= SCROLL_FIRST and id <= SCROLL_LAST)
             or info == nil or info.noSale or info.rare or info.exclusive
             or (gear.slotOf(info) and bot:canEquipItem(id, false)) -- gear this job can use, now or later
-            or (keep and keep(id))
+            or keepIt
         if not skip then
             table.insert(out, item)
         end
@@ -350,10 +356,11 @@ local function buyWanted(rec, bot, stock)
     end)
     local boughtSlot = {}
     for _, w in ipairs(wants) do
-        -- Spells and craft tools may take most of the purse; one piece of gear at most half of it.
+        -- Spells and craft tools may take most of the purse; a weapon up to 70% of it (the job's weapon type
+        -- decides kills and skillchains), any other piece of gear half.
         local budget = bot:getGil() - RESERVE_GIL
         if w.kind == 'gear' then
-            budget = math.min(budget, math.floor(bot:getGil() / 2))
+            budget = math.min(budget, math.floor(bot:getGil() * (w.priority == 2 and 0.7 or 0.5)))
         end
         if w.entry.price <= budget and not (w.slot and boughtSlot[w.slot]) then
             local gilBefore = bot:getGil()

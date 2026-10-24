@@ -63,7 +63,7 @@ case('areas: level windows', function()
     lo, hi = areas.levelWindow(8, false)
     eq(lo, 4, 'lv8 min'); eq(hi, 8, 'lv8 max')
     lo, hi = areas.levelWindow(20, true)
-    eq(lo, 20, 'party lv20 min'); eq(hi, 24, 'party lv20 max')
+    eq(lo, 20, 'party lv20 min'); eq(hi, 23, 'party lv20 max (lowest member + 3)')
 end)
 
 case('areas: every level 1-75 has candidate zones for every nation', function()

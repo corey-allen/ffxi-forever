@@ -25,7 +25,7 @@ local PLAN =
     [xi.nation.SANDORIA] =
     {
         craft = 'woodworking', skill = xi.skill.WOODWORKING,
-        tool = xi.item.HATCHET, zone = xi.zone.EAST_RONFAURE, point = 'Logging_Point',
+        tool = xi.item.HATCHET, zones = { xi.zone.EAST_RONFAURE, xi.zone.BUBURIMU_PENINSULA }, point = 'Logging_Point',
         recipes =
         {
             { name = 'Arrowwood Lumber', level = 2, result = 705, crystal = CRYSTAL.WIND, items = { 688 } },
@@ -36,7 +36,7 @@ local PLAN =
     [xi.nation.BASTOK] =
     {
         craft = 'smithing', skill = xi.skill.SMITHING,
-        tool = xi.item.PICKAXE, zone = xi.zone.ZERUHN_MINES, point = 'Mining_Point',
+        tool = xi.item.PICKAXE, zones = { xi.zone.ZERUHN_MINES, xi.zone.PALBOROUGH_MINES, xi.zone.GUSGEN_MINES }, point = 'Mining_Point',
         recipes =
         {
             { name = 'Bronze Ingot', level = 2, result = 649, crystal = CRYSTAL.FIRE, items = { 640, 640, 640, 641 } },
@@ -46,7 +46,7 @@ local PLAN =
     [xi.nation.WINDURST] =
     {
         craft = 'clothcraft', skill = xi.skill.CLOTHCRAFT,
-        tool = xi.item.SICKLE, zone = xi.zone.WEST_SARUTABARUTA, point = 'Harvesting_Point',
+        tool = xi.item.SICKLE, zones = { xi.zone.WEST_SARUTABARUTA }, point = 'Harvesting_Point',
         recipes =
         {
             { name = 'Grass Thread', level = 3, result = 817, crystal = CRYSTAL.LIGHTNING, items = { 833, 833 } },
@@ -204,21 +204,37 @@ function gather.choose(rec, bot, t)
     if countItem(bot, plan.tool) == 0 or bot:getFreeSlotsCount() < 6 or t < (s.nextGather or 0) then
         return false
     end
+    -- The first gathering zone not set aside (a whole trip there without a single trade).
+    s.gatherBad = s.gatherBad or {}
+    local zone  = nil
+    for _, z in ipairs(plan.zones) do
+        if zone == nil and t >= (s.gatherBad[tostring(z)] or 0) then
+            zone = z
+        end
+    end
+    if zone == nil then
+        return false
+    end
     s.nextGather   = t + GATHER_EVERY
-    rec.mem.gather = { startAt = t, tries = 0, got = 0, toolsStart = countItem(bot, plan.tool) }
+    rec.mem.gather = { startAt = t, tries = 0, got = 0, toolsStart = countItem(bot, plan.tool), zone = zone }
     return true
 end
 
 local function gatherDone(rec, bot, t, why)
     local g, plan = rec.mem.gather, planFor(rec)
-    xi.worldbots.brain.log(rec, 'gather', string.format('%s: %d trades, %d items, tools %d -> %d, %ds',
-        why, g.tries, g.got, g.toolsStart, countItem(bot, plan.tool), t - g.startAt))
+    if g.tries == 0 and why ~= 'tool broke' then
+        rec.state.gatherBad = rec.state.gatherBad or {}
+        rec.state.gatherBad[tostring(g.zone)] = t + 86400 -- nothing reachable there for this bot: another zone next time
+    end
+    xi.worldbots.brain.log(rec, 'gather', string.format('%s in zone %d: %d trades, %d items, tools %d -> %d, %ds',
+        why, g.zone or 0, g.tries, g.got, g.toolsStart, countItem(bot, plan.tool), t - g.startAt))
     rec.mem.gather = nil
     return 'done'
 end
 
 function gather.step(rec, bot, t)
     local g, plan = rec.mem.gather, planFor(rec)
+    g.zone = g.zone or plan.zones[1]
     if bot:worldbotInEvent() then
         bot:worldbotEndEvent(0) -- the gathering cutscene
         return 'running'
@@ -233,8 +249,8 @@ function gather.step(rec, bot, t)
     if tools == 0 then
         return gatherDone(rec, bot, t, 'tool broke')
     end
-    if bot:getZoneID() ~= plan.zone then
-        local r = travel.toZone(bot, rec.mem, plan.zone, t)
+    if bot:getZoneID() ~= g.zone then
+        local r = travel.toZone(bot, rec.mem, g.zone, t)
         if r == 'noroute' or r == 'giveup' then
             return gatherDone(rec, bot, t, 'cannot reach the gathering zone')
         end
@@ -318,6 +334,12 @@ function craft.choose(rec, bot, t)
         return false
     end
     rec.mem.nextCraftCheck = t + 300
+    if bot.sortInventory then
+        bot:sortInventory() -- merge split stacks first
+    end
+    if bot:getFreeSlotsCount() < 2 then
+        return false -- the server needs a free slot for the result; selling comes first
+    end
     if pickRecipe(rec, bot) == nil then
         return false
     end
@@ -356,6 +378,9 @@ function craft.step(rec, bot, t)
     if c.synths >= MAX_SYNTHS or t - c.startAt > TRIP_MAX then
         return craftDone(rec, bot, t, 'session over')
     end
+    if t < (c.lastStart or 0) + 16 then
+        return 'running' -- the server allows one synthesis start per 15 s
+    end
     local r = pickRecipe(rec, bot)
     if r == nil then
         return craftDone(rec, bot, t, 'out of materials')
@@ -372,11 +397,14 @@ function craft.step(rec, bot, t)
             end
         end
     end
-    if bot:worldbotSynth(r.crystal, crystalSlot, ingredients) then
-        c.synths  = c.synths + 1
-        c.pending = { name = r.name, result = r.result, resultBefore = countItem(bot, r.result), skill = crafting.skill(bot, planFor(rec).skill) }
+    local before = { result = countItem(bot, r.result), skill = crafting.skill(bot, planFor(rec).skill) }
+    if bot:worldbotSynth(r.crystal, crystalSlot, ingredients) and bot:worldbotIsCrafting() then
+        c.synths    = c.synths + 1
+        c.lastStart = t
+        c.pending   = { name = r.name, result = r.result, resultBefore = before.result, skill = before.skill }
     else
-        return craftDone(rec, bot, t, 'synthesis refused')
+        -- Not started (the server says why in its log: bags full, 15 s between syntheses, missing items).
+        return craftDone(rec, bot, t, 'synthesis not started')
     end
     return 'running'
 end

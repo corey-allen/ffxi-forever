@@ -79,7 +79,7 @@ areas.HOME =
 -- caster: a solo mage (melee is weak until it has bought its spells) stays at or below its level.
 function areas.levelWindow(level, inParty, caster)
     if inParty then
-        return level, level + 4
+        return level, level + 3 -- level: the party's lowest member
     end
     if caster then
         return math.max(1, level - 4), math.max(1, level - 1) -- even matches killed too many level-3 Tarutaru mages

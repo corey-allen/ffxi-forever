@@ -108,6 +108,27 @@ function hunt.candidates(bot, minLevel, maxLevel, anchor, owner, now)
     return out
 end
 
+-- The nearest monster in the level window anywhere in the zone (no radius), away from dangers: where to go
+-- when nothing is close. Returns { x, y, z } or nil.
+function hunt.nearestAnywhere(bot, minLevel, maxLevel)
+    local zone = bot:getZone()
+    if zone == nil then
+        return nil
+    end
+    local dangers = hunt.dangers(bot, maxLevel)
+    local bx, bz  = bot:getXPos(), bot:getZPos()
+    local best, bestD2 = nil, math.huge
+    for _, m in ipairs(hunt.snapshot(zone).mobs) do
+        if m.lvl >= minLevel and m.lvl <= maxLevel and hunt.isSafe(dangers, m.x, m.z) then
+            local d2 = sq(m.x - bx) + sq(m.z - bz)
+            if d2 < bestD2 then
+                best, bestD2 = { x = m.x, y = m.y, z = m.z }, d2
+            end
+        end
+    end
+    return best
+end
+
 -- How many huntable monsters a zone has for this level (whole zone), to choose a camp.
 function hunt.zoneScore(zone, minLevel, maxLevel)
     if zone == nil then

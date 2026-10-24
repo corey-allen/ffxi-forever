@@ -593,9 +593,11 @@ local function fightStep(rec, bot, t)
     end
 end
 
+local huntLevel
+
 local function chooseCamp(rec, bot, exclude)
     local s       = rec.state
-    local level   = bot:getMainLvl()
+    local level   = huntLevel(rec, bot)
     local zone, n = hunt.chooseZone(rec.row.nation, level, rec.mem.party ~= nil, exclude)
     s.campForParty = rec.mem.party ~= nil
     if zone ~= s.campZone then
@@ -605,9 +607,25 @@ local function chooseCamp(rec, bot, exclude)
     s.campLevel = level
 end
 
+-- A party hunts for its weakest member: the lowest level among those online.
+huntLevel = function(rec, bot)
+    local level = bot:getMainLvl()
+    if rec.mem.party then
+        for _, other in ipairs(brain.list) do
+            if other.mem.party == rec.mem.party then
+                local b = WorldbotGet(other.charId)
+                if b then
+                    level = math.min(level, b:getMainLvl())
+                end
+            end
+        end
+    end
+    return level
+end
+
 local function huntStep(rec, bot, t)
     local s     = rec.state
-    local level = bot:getMainLvl()
+    local level = huntLevel(rec, bot)
     local inBand = false
     for _, z in ipairs(areas.candidates(rec.row.nation, level)) do
         inBand = inBand or z == s.campZone
@@ -666,6 +684,13 @@ local function huntStep(rec, bot, t)
     end
     -- Nothing here: wander to find spawns, never toward aggressive monsters too strong for the bot.
     if rec.mem.wander == nil or t > rec.mem.wander.untilT then
+        -- Head for where the monsters are; wander at random only when the zone has none in range at all.
+        local target = hunt.nearestAnywhere(bot, minLv, maxLv)
+        if target then
+            rec.mem.wander = { x = target.x, y = target.y, z = target.z, untilT = t + 40 }
+            travel.walkTo(bot, rec.mem, target.x, target.y, target.z, 20, t)
+            return
+        end
         local dangers = hunt.dangers(bot, maxLv)
         for _ = 1, 8 do
             local a = math.random() * math.pi * 2
