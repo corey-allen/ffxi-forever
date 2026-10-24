@@ -375,6 +375,11 @@ auto despawn(uint32 charId) -> bool
     return true;
 }
 
+auto isBotId(uint32 charId) -> bool
+{
+    return g_state.contains(charId);
+}
+
 auto isBot(const CCharEntity* PChar) -> bool
 {
     return PChar != nullptr && g_state.contains(PChar->id);

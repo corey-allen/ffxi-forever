@@ -75,6 +75,7 @@ void processArrivals();
 inline constexpr const char* kNoLoginPassword = "!worldbot:no-login";
 
 auto isBot(const CCharEntity* PChar) -> bool;
+auto isBotId(uint32 charId) -> bool; // a spawned world bot with this character id
 auto state(const CCharEntity* PChar) -> BotState*; // nullptr for non-bots
 auto bots() -> std::vector<uint32>;                // char ids of all spawned bots
 

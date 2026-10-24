@@ -147,6 +147,25 @@ case('context: release drops an empty context and keeps a shared one', function(
     eq(context.byKey['t:1'], nil, 'dropped')
 end)
 
+-----------------------------------
+-- weapon skills and skillchain pairs (stub bots: an axe WAR and a sword RDM chain Detonation > Scission)
+-----------------------------------
+case('brain: weapon skills pair an axe opener with a sword closer', function()
+    local brain = xi.worldbots.brain
+    local function stub(name, main)
+        return { getEquipID = function(_, slot) return slot == xi.slot.MAIN and main or 0 end, getName = function() return name end }
+    end
+    local war = { rec = { charId = -11, row = { job = xi.job.WAR } }, bot = stub('Axeman', 16640) } -- Bronze Axe
+    local rdm = { rec = { charId = -12, row = { job = xi.job.RDM } }, bot = stub('Blade', 16534) } -- Onion Sword
+    local sc, solo = brain.weaponSkillsFor({ war, rdm })
+    eq(#sc, 1, 'pairs')
+    eq(sc[1].openWS, 'Raging Axe', 'opener')
+    eq(sc[1].closeWS, 'Fast Blade', 'closer')
+    eq(sc[1].chain, 'Scission', 'skillchain')
+    truthy(sc[1].openCharId == -11 and sc[1].closeCharId == -12, 'char ids for the pair lookup')
+    eq(next(solo), nil, 'nobody left over for solo weapon skills')
+end)
+
 function tests.run()
     local passed, failed = 0, {}
     for _, c in ipairs(cases) do

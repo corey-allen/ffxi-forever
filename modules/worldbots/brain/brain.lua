@@ -19,6 +19,7 @@ local travel     = require('modules/worldbots/brain/travel')
 local hunt       = require('modules/worldbots/brain/hunt')
 local areas      = require('modules/worldbots/brain/areas')
 local gear       = require('modules/worldbots/brain/gear')
+local telemetry  = require('modules/worldbots/brain/telemetry')
 local json       = require('modules/worldbots/lib/json')
 
 local bots = xi.singleplayer.bots
@@ -31,6 +32,8 @@ local brain =
     nextPrune = 0,
     nextParty = 0,
     activities = {}, -- name -> module with choose(rec, bot, now) / step(rec, bot, now); M5 and M6 add theirs
+    -- Tried in this order: Signet first (crystal drops), crafting before selling (materials become goods).
+    ACTIVITY_ORDER = { 'signet', 'craft', 'shop', 'gather' },
 }
 
 local function now()
@@ -133,6 +136,12 @@ end
 
 brain.roleFor = roleFor
 
+-- A solo bot's AI context, with its weapon skill (Nate's AI fires solo weapon skills from this list).
+function brain.soloContext(rec, bot)
+    local _, solo = brain.weaponSkillsFor({ { rec = rec, bot = bot } }) -- defined further down
+    return context.form('solo:' .. rec.charId, { { entity = bot, role = roleFor(rec, false) } }, { solo = solo })
+end
+
 function brain.login(rec)
     local bot = WorldbotSpawnId(rec.charId)
     if bot == nil then
@@ -148,7 +157,7 @@ function brain.login(rec)
     end
     bot:worldbotSetParent(rec.charId)
     combatOnly(bot)
-    context.solo(bot, roleFor(rec, false))
+    brain.soloContext(rec, bot)
     local s = rec.state
     s.level  = s.level or bot:getMainLvl()
     s.goal   = s.goal or nextLevelGoal(bot:getMainLvl())
@@ -201,7 +210,7 @@ function brain.onArrive(bot, fromZone)
         brain.refreshParty(rec.mem.party)
     else
         bot:worldbotSetParent(rec.charId)
-        context.solo(bot, roleFor(rec, false))
+        brain.soloContext(rec, bot)
     end
 end
 
@@ -263,28 +272,38 @@ local function partyCandidates()
     return byNation
 end
 
--- Skillchain pairs Nate's AI can run: open with the first, close with the second (both level-1 weapon skills).
--- (The WAR closes with an axe: brain/gear.lua makes axes its preferred weapon.)
-local SC_PAIRS =
-{
-    { open = xi.job.MNK, openWS = 'Combo',      close = xi.job.WAR, closeWS = 'Raging Axe' }, -- Impaction > Detonation
-    { open = xi.job.THF, openWS = 'Wasp Sting', close = xi.job.WAR, closeWS = 'Raging Axe' }, -- Scission > Detonation
-    { open = xi.job.RDM, openWS = 'Fast Blade', close = xi.job.WAR, closeWS = 'Raging Axe' }, -- Scission > Detonation
-}
-
--- Skillchain pairs for the jobs present: { { priority, openName, openWS, closeName, closeWS } } (one pair).
-local function skillchainsFor(bots)
-    local byJob = {}
-    for _, m in ipairs(bots) do
-        byJob[m.rec.row.job] = byJob[m.rec.row.job] or m.bot
-    end
-    for i, p in ipairs(SC_PAIRS) do
-        if byJob[p.open] and byJob[p.close] then
-            return { { priority = i, openName = byJob[p.open]:getName(), openWS = p.openWS, closeName = byJob[p.close]:getName(), closeWS = p.closeWS } }
+-- Weapon skills for a party from what its members hold: one skillchain pair (opener, closer) when two
+-- members' first weapon skills chain, and every other melee member's skill for Nate's solo-WS list.
+-- members: { { rec, bot }, ... }. Returns sc, solo.
+local MELEE_ROLES = { [Role.Tank] = true, [Role.Melee] = true }
+local function weaponSkillsFor(members)
+    local ws = {}
+    for _, m in ipairs(members) do
+        local w = gear.weaponSkill(m.bot)
+        if w then
+            table.insert(ws, { m = m, w = w })
         end
     end
-    return {}
+    local sc, inPair = {}, {}
+    for _, a in ipairs(ws) do
+        for _, b in ipairs(ws) do
+            if #sc == 0 and a ~= b and gear.chain(a.w.prop, b.w.prop) then
+                sc = { { priority = 1, openCharId = a.m.rec.charId, openName = a.m.bot:getName(), openWS = a.w.name,
+                         closeCharId = b.m.rec.charId, closeName = b.m.bot:getName(), closeWS = b.w.name, chain = gear.chain(a.w.prop, b.w.prop) } }
+                inPair[a.m.rec.charId], inPair[b.m.rec.charId] = true, true
+            end
+        end
+    end
+    local solo = {}
+    for _, e in ipairs(ws) do
+        local role = (#members > 1 and PARTY_ROLE or SOLO_ROLE)[e.m.rec.row.job]
+        if not inPair[e.m.rec.charId] and MELEE_ROLES[role] then
+            solo[e.m.rec.charId] = e.w.name
+        end
+    end
+    return sc, solo
 end
+brain.weaponSkillsFor = weaponSkillsFor
 
 function brain.formParty(group)
     table.sort(group, function(a, b)
@@ -309,14 +328,15 @@ function brain.formParty(group)
         m.bot:worldbotSetParent(leader.rec.charId)
         combatOnly(m.bot)
     end
-    local sc = skillchainsFor(group)
-    context.form(key, members, { sc = sc })
+    local sc, solo = weaponSkillsFor(group)
+    context.form(key, members, { sc = sc, solo = solo })
     local names = {}
     for _, m in ipairs(group) do
         table.insert(names, string.format('%s(%d)', m.bot:getName(), m.bot:getMainLvl()))
     end
     for _, m in ipairs(group) do
-        log(m.rec, 'party', string.format('joined %s led by %s: %s; skillchain pairs %d', key, leader.bot:getName(), table.concat(names, ' '), #sc))
+        log(m.rec, 'party', string.format('joined %s led by %s: %s; skillchain %s', key, leader.bot:getName(), table.concat(names, ' '),
+            sc[1] and string.format('%s %s > %s %s (%s)', sc[1].openName, sc[1].openWS, sc[1].closeName, sc[1].closeWS, sc[1].chain) or 'none'))
     end
 end
 
@@ -338,7 +358,8 @@ function brain.refreshParty(key)
         end
     end
     if #members > 0 then
-        context.form(key, members, { sc = skillchainsFor(present) })
+        local sc, solo = weaponSkillsFor(present)
+        context.form(key, members, { sc = sc, solo = solo })
     end
 end
 
@@ -359,7 +380,7 @@ function brain.leaveParty(rec, reason)
                     leader:partyRemoveMember(bot)
                 end
                 bot:worldbotSetParent(other.charId)
-                context.solo(bot, roleFor(other, false))
+                brain.soloContext(other, bot)
             end
             log(other, 'party', 'left ' .. key .. ': ' .. reason)
         end
@@ -531,8 +552,9 @@ local function finishFight(rec, bot, result, t)
     if bot:getMainLvl() > f.lvStart then
         expGain = expGain + 1000 -- crossed a level; the exact figure is in the level log line
     end
-    log(rec, 'fight', string.format('%s %s (lv%d, id %d) in %ds; exp %+d; hp %d/%d; zone %d',
-        result, f.mobName, f.mobLevel, f.mobId, t - f.startAt, expGain, bot:getHP(), bot:getMaxHP(), bot:getZoneID()))
+    log(rec, 'fight', string.format('%s %s (lv%d, id %d) in %ds; exp %+d; hp %d/%d; zone %d%s%s',
+        result, f.mobName, f.mobLevel, f.mobId, t - f.startAt, expGain, bot:getHP(), bot:getMaxHP(), bot:getZoneID(),
+        rec.mem.party and (' (' .. rec.mem.party .. ')') or '', telemetry.take(rec)))
     if result ~= 'won' then
         rec.mem.skip = rec.mem.skip or {}
         rec.mem.skip[f.mobId] = t + 120
@@ -571,10 +593,11 @@ local function fightStep(rec, bot, t)
     end
 end
 
-local function chooseCamp(rec, bot)
+local function chooseCamp(rec, bot, exclude)
     local s       = rec.state
     local level   = bot:getMainLvl()
-    local zone, n = hunt.chooseZone(rec.row.nation, level, rec.mem.party ~= nil)
+    local zone, n = hunt.chooseZone(rec.row.nation, level, rec.mem.party ~= nil, exclude)
+    s.campForParty = rec.mem.party ~= nil
     if zone ~= s.campZone then
         log(rec, 'goal', string.format('camp for lv%d: zone %s (%d monsters in range)', level, tostring(zone), n or 0))
     end
@@ -589,8 +612,10 @@ local function huntStep(rec, bot, t)
     for _, z in ipairs(areas.candidates(rec.row.nation, level)) do
         inBand = inBand or z == s.campZone
     end
-    if s.campZone == nil or s.campLevel == nil or not inBand or math.abs(level - s.campLevel) >= 3 then
+    local partyChanged = (rec.mem.party ~= nil) ~= (s.campForParty == true)
+    if s.campZone == nil or s.campLevel == nil or (not inBand and not s.campForParty) or partyChanged or math.abs(level - s.campLevel) >= 3 then
         chooseCamp(rec, bot)
+        rec.mem.emptyPicks = 0
     end
     if s.campZone == nil then
         return
@@ -616,11 +641,28 @@ local function huntStep(rec, bot, t)
     for _, c in ipairs(hunt.candidates(bot, minLv, maxLv, nil, claimOwner(rec), t)) do
         local skipUntil = rec.mem.skip and rec.mem.skip[c.mob:getID()]
         if skipUntil == nil or t >= skipUntil then
+            rec.mem.emptyPicks = 0
             hunt.start(rec.mem, bot, c.mob, t)
             hunt.claim(c.mob:getID(), claimOwner(rec), t)
             log(rec, 'target', string.format('%s (lv%d, id %d) at %.0f yalms', c.mob:getName(), c.mob:getMainLvl(), c.mob:getID(), math.sqrt(c.d2)))
             return
         end
+    end
+    -- Nothing worth hunting here for a minute (about 20 picks while wandering): try the next camp.
+    rec.mem.emptyPicks = (rec.mem.emptyPicks or 0) + 1
+    if rec.mem.emptyPicks >= 60 then -- about three minutes of wandering
+        rec.mem.emptyPicks = 0
+        log(rec, 'goal', string.format('no monsters for lv%d in zone %d; moving camp', level, bot:getZoneID()))
+        rec.mem.badCamps = rec.mem.badCamps or {}
+        rec.mem.badCamps[bot:getZoneID()] = t + 900
+        local exclude = {}
+        for z, untilT in pairs(rec.mem.badCamps) do
+            if t < untilT then
+                exclude[z] = true
+            end
+        end
+        chooseCamp(rec, bot, exclude)
+        return
     end
     -- Nothing here: wander to find spawns, never toward aggressive monsters too strong for the bot.
     if rec.mem.wander == nil or t > rec.mem.wander.untilT then
@@ -792,8 +834,9 @@ thinkImpl = function(bot)
     end
     if isPartyLeader(rec) and t >= (rec.mem.nextActivityCheck or 0) then
         rec.mem.nextActivityCheck = t + 30
-        for name, act in pairs(brain.activities) do
-            if act.choose(rec, bot, t) then
+        for _, name in ipairs(brain.ACTIVITY_ORDER) do
+            local act = brain.activities[name]
+            if act and act.choose(rec, bot, t) then
                 rec.mem.activity = name
                 log(rec, 'activity', 'starting ' .. name)
                 return

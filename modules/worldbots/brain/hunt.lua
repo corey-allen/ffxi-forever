@@ -6,7 +6,7 @@ local areas = require('modules/worldbots/brain/areas')
 
 local hunt = {}
 
-local SEARCH_RADIUS   = 80   -- yalms around the bot (or camp anchor)
+local SEARCH_RADIUS   = 120  -- yalms around the bot (or camp anchor)
 local ENGAGE_TIMEOUT  = 45   -- seconds to reach and engage a chosen mob before dropping it
 local FIGHT_TIMEOUT   = 240  -- seconds before a fight that makes no progress is abandoned
 
@@ -123,19 +123,29 @@ function hunt.zoneScore(zone, minLevel, maxLevel)
 end
 
 -- First candidate zone with enough monsters for this level.
-function hunt.chooseZone(nation, level, inParty)
+function hunt.chooseZone(nation, level, inParty, exclude)
     local minLv, maxLv = areas.levelWindow(level, inParty)
-    local best, bestScore = nil, 0
-    for _, zoneId in ipairs(areas.candidates(nation, level)) do
-        local score = hunt.zoneScore(GetZone(zoneId), minLv, maxLv)
-        if score >= 8 then
-            return zoneId, score
+    local function best(candidates)
+        local zone, score = nil, 0
+        for _, zoneId in ipairs(candidates) do
+            local n = (exclude and exclude[zoneId]) and -1 or hunt.zoneScore(GetZone(zoneId), minLv, maxLv)
+            if n >= 8 then
+                return zoneId, n
+            end
+            if n > score then
+                zone, score = zoneId, n
+            end
         end
-        if score > bestScore then
-            best, bestScore = zoneId, score
+        return zone, score
+    end
+    -- Parties try the party zones first, then the zones for their level (a young party camps where it can).
+    if inParty then
+        local zone, score = best(areas.candidates(nation, math.max(level, 10)))
+        if zone then
+            return zone, score
         end
     end
-    return best, bestScore
+    return best(areas.candidates(nation, level))
 end
 
 -- Begin a fight record: called when the brain hands a mob to the AI.

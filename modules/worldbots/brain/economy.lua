@@ -268,9 +268,9 @@ function act.choose(rec, bot, t)
     if bot.sortInventory then
         bot:sortInventory() -- merge split stacks (Nate's port of the client's sort, packet 0x03A)
     end
-    local fullBags  = freeSlots(bot) <= 4
     local newLevels = level >= (s.lastShopLevel or 1) + 2
     local toSell    = #economy.sellable(bot, economy.keepFor(rec))
+    local fullBags  = freeSlots(bot) <= 4 and toSell > 0 -- full of materials it keeps: crafting's job, not a trip
     local hasGil    = bot:getGil() >= RESERVE_GIL + 40
     -- Or: a vendor the bots know sells something this bot wants and can afford now.
     local knownWant = false

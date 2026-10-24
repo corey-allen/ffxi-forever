@@ -138,22 +138,20 @@ void dispatchActionResult(const action_t& action)
     {
         return;
     }
-    CBaseEntity* PActor = zoneutils::GetEntity(action.actorId);
-    if (PActor == nullptr)
+    // WORLDBOTS: only actions with a world bot as actor or target reach the bot Lua (a registry lookup,
+    // cheap for every action on the server). zoneutils::GetEntity decodes monster and NPC ids only;
+    // characters are found by id.
+    bool relevant = isBotId(action.actorId);
+    for (const auto& target : action.targets)
+    {
+        relevant = relevant || isBotId(target.actorId);
+    }
+    if (!relevant)
     {
         return;
     }
-    // WORLDBOTS: skip actions with no world bot as actor or target.
-    const auto involvesBot = [](CBaseEntity* PEntity)
-    {
-        return PEntity != nullptr && PEntity->objtype == TYPE_PC && static_cast<CCharEntity*>(PEntity)->m_worldbot;
-    };
-    bool relevant = involvesBot(PActor);
-    for (const auto& target : action.targets)
-    {
-        relevant = relevant || involvesBot(zoneutils::GetEntity(target.actorId));
-    }
-    if (!relevant)
+    CBaseEntity* PActor = isBotId(action.actorId) ? static_cast<CBaseEntity*>(zoneutils::GetChar(action.actorId)) : zoneutils::GetEntity(action.actorId);
+    if (PActor == nullptr)
     {
         return;
     }

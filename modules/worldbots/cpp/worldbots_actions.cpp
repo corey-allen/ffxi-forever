@@ -220,6 +220,13 @@ void registerActionsLuaApi()
         return PEntity != nullptr && PEntity->objtype == TYPE_MOB && static_cast<CMobEntity*>(PEntity)->m_Aggro;
     };
 
+    // Skill with tenths (crafts rise by 0.1): RealSkills holds it times ten.
+    E["worldbotSkillTenths"] = [](CLuaBaseEntity* L, uint16 skillId) -> uint16
+    {
+        auto* PChar = asChar(L);
+        return PChar != nullptr && skillId < MAX_SKILLTYPE ? PChar->RealSkills.skill[skillId] : 0;
+    };
+
     E["worldbotIsCrafting"] = [](CLuaBaseEntity* L) -> bool
     {
         auto* PChar = asChar(L);

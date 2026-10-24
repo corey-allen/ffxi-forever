@@ -28,9 +28,9 @@ local PLAN =
         tool = xi.item.HATCHET, zone = xi.zone.EAST_RONFAURE, point = 'Logging_Point',
         recipes =
         {
-            { name = 'Arrowwood Lumber', level = 2, crystal = CRYSTAL.WIND, items = { 688 } },
-            { name = 'Maple Lumber',     level = 5, crystal = CRYSTAL.WIND, items = { 691 } },
-            { name = 'Ash Lumber',       level = 8, crystal = CRYSTAL.WIND, items = { 698 } },
+            { name = 'Arrowwood Lumber', level = 2, result = 705, crystal = CRYSTAL.WIND, items = { 688 } },
+            { name = 'Maple Lumber',     level = 5, result = 708, crystal = CRYSTAL.WIND, items = { 691 } },
+            { name = 'Ash Lumber',       level = 8, result = 715, crystal = CRYSTAL.WIND, items = { 698 } },
         },
     },
     [xi.nation.BASTOK] =
@@ -39,8 +39,8 @@ local PLAN =
         tool = xi.item.PICKAXE, zone = xi.zone.ZERUHN_MINES, point = 'Mining_Point',
         recipes =
         {
-            { name = 'Bronze Ingot', level = 2, crystal = CRYSTAL.FIRE, items = { 640, 640, 640, 641 } },
-            { name = 'Bronze Sheet', level = 4, crystal = CRYSTAL.FIRE, items = { 649 } },
+            { name = 'Bronze Ingot', level = 2, result = 649, crystal = CRYSTAL.FIRE, items = { 640, 640, 640, 641 } },
+            { name = 'Bronze Sheet', level = 4, result = 660, crystal = CRYSTAL.FIRE, items = { 649 } },
         },
     },
     [xi.nation.WINDURST] =
@@ -49,8 +49,8 @@ local PLAN =
         tool = xi.item.SICKLE, zone = xi.zone.WEST_SARUTABARUTA, point = 'Harvesting_Point',
         recipes =
         {
-            { name = 'Grass Thread', level = 3, crystal = CRYSTAL.LIGHTNING, items = { 833, 833 } },
-            { name = 'Grass Cloth',  level = 4, crystal = CRYSTAL.EARTH,     items = { 817, 817, 817 } },
+            { name = 'Grass Thread', level = 3, result = 817, crystal = CRYSTAL.LIGHTNING, items = { 833, 833 } },
+            { name = 'Grass Cloth',  level = 4, result = 824, crystal = CRYSTAL.EARTH,     items = { 817, 817, 817 } },
         },
     },
 }
@@ -68,6 +68,14 @@ local GATHER_TRIES   = 12   -- trades per gathering trip (tools break; points mo
 local GATHER_EVERY   = 1800 -- seconds of play between gathering trips
 local MAX_SYNTHS     = 12   -- per crafting session
 local TRIP_MAX       = 900
+
+-- Craft skill in tenths (the server keeps crafts to 0.1); getSkillLevel only has whole levels.
+function crafting.skill(bot, skillId)
+    if bot.worldbotSkillTenths then
+        return bot:worldbotSkillTenths(skillId)
+    end
+    return bot:getSkillLevel(skillId) * 10
+end
 
 local function planFor(rec)
     return PLAN[rec.row.nation]
@@ -280,7 +288,7 @@ local function pickRecipe(rec, bot)
     if plan == nil then
         return nil
     end
-    local skill = bot:getSkillLevel(plan.skill) / 10 -- skill is stored in tenths
+    local skill = crafting.skill(bot, plan.skill) / 10
     local best  = nil
     for _, r in ipairs(plan.recipes) do
         if r.level <= skill + 10 then
@@ -292,7 +300,12 @@ local function pickRecipe(rec, bot)
             for id, n in pairs(need) do
                 ok = ok and countItem(bot, id) >= n
             end
-            if ok and (best == nil or r.level > best.level) then
+            -- As players did: the recipe closest above the current skill (skill-ups come from recipes
+            -- a little above it); below the skill only when nothing above it can be made.
+            local function rank(x)
+                return x.level >= skill and (x.level - skill) or (100 + skill - x.level)
+            end
+            if ok and (best == nil or rank(r) < rank(best)) then
                 best = r
             end
         end
@@ -308,14 +321,14 @@ function craft.choose(rec, bot, t)
     if pickRecipe(rec, bot) == nil then
         return false
     end
-    rec.mem.craft = { startAt = t, synths = 0, made = 0, skillStart = bot:getSkillLevel(planFor(rec).skill) }
+    rec.mem.craft = { startAt = t, synths = 0, made = 0, skillStart = crafting.skill(bot, planFor(rec).skill) }
     return true
 end
 
 local function craftDone(rec, bot, t, why)
     local c, plan = rec.mem.craft, planFor(rec)
-    xi.worldbots.brain.log(rec, 'craft', string.format('%s: %d syntheses, %s skill %.1f -> %.1f, %ds',
-        why, c.synths, plan.craft, c.skillStart / 10, bot:getSkillLevel(plan.skill) / 10, t - c.startAt))
+    xi.worldbots.brain.log(rec, 'craft', string.format('%s: %d syntheses, %d made, %s skill %.1f -> %.1f, %ds',
+        why, c.synths, c.made, plan.craft, c.skillStart / 10, crafting.skill(bot, plan.skill) / 10, t - c.startAt))
     rec.mem.craft = nil
     return 'done'
 end
@@ -330,9 +343,14 @@ function craft.step(rec, bot, t)
         return 'running'
     end
     if c.pending then
-        -- The last synthesis finished: record what changed.
-        local p = c.pending
-        xi.worldbots.brain.log(rec, 'synth', string.format('%s: skill %.1f -> %.1f', p.name, p.skill / 10, bot:getSkillLevel(planFor(rec).skill) / 10))
+        -- The last synthesis finished: record the outcome (result item count) and the skill.
+        local p    = c.pending
+        local made = countItem(bot, p.result) - p.resultBefore
+        if made > 0 then
+            c.made = c.made + 1
+        end
+        xi.worldbots.brain.log(rec, 'synth', string.format('%s: %s; %s skill %.1f -> %.1f', p.name, made > 0 and ('made ' .. made) or 'failed',
+            planFor(rec).craft, p.skill / 10, crafting.skill(bot, planFor(rec).skill) / 10))
         c.pending = nil
     end
     if c.synths >= MAX_SYNTHS or t - c.startAt > TRIP_MAX then
@@ -356,7 +374,7 @@ function craft.step(rec, bot, t)
     end
     if bot:worldbotSynth(r.crystal, crystalSlot, ingredients) then
         c.synths  = c.synths + 1
-        c.pending = { name = r.name, skill = bot:getSkillLevel(planFor(rec).skill) }
+        c.pending = { name = r.name, result = r.result, resultBefore = countItem(bot, r.result), skill = crafting.skill(bot, planFor(rec).skill) }
     else
         return craftDone(rec, bot, t, 'synthesis refused')
     end

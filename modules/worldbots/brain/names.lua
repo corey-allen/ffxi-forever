@@ -117,6 +117,9 @@ function names.generate(race)
         parts[1] = parts[1] .. parts[1]
     end
     local name = table.concat(parts)
+    while #name < 4 do -- the server wants 3+ letters; short syllable pairs ("a" + "a") need one more
+        name = name .. pool[math.random(#pool)]
+    end
     if #name > 15 then
         name = name:sub(1, 15)
     end

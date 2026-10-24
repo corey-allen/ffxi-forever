@@ -78,4 +78,36 @@ function gear.wornScore(bot, slot)
     return gear.score(bot, WorldbotItemInfo(id) or {}) or -1
 end
 
+-- The first weapon skill of each weapon type (skill 5), with its skillchain property, as 2006 players used.
+local FIRST_WS =
+{
+    [S.HAND_TO_HAND] = { name = 'Combo',          prop = 'Impaction' },
+    [S.DAGGER]       = { name = 'Wasp Sting',     prop = 'Scission' },
+    [S.SWORD]        = { name = 'Fast Blade',     prop = 'Scission' },
+    [S.AXE]          = { name = 'Raging Axe',     prop = 'Detonation' },
+    [S.CLUB]         = { name = 'Shining Strike', prop = 'Impaction' },
+    [S.STAFF]        = { name = 'Heavy Swing',    prop = 'Impaction' },
+}
+
+-- Level-1 skillchains: opener property -> closer property -> resulting skillchain.
+local CHAINS =
+{
+    Scission   = { Detonation = 'Detonation', Liquefaction = 'Liquefaction' },
+    Impaction  = { Detonation = 'Detonation', Liquefaction = 'Liquefaction' },
+    Detonation = { Scission = 'Scission', Compression = 'Gravitation' },
+}
+
+-- The weapon skill a bot can use with what it holds ({ name, prop }), or nil.
+function gear.weaponSkill(bot)
+    local id    = bot:getEquipID(xi.slot.MAIN)
+    local info  = (id and id ~= 0) and WorldbotItemInfo(id) or nil
+    local skill = info and info.skill or S.HAND_TO_HAND -- empty hands: hand-to-hand
+    return FIRST_WS[skill]
+end
+
+-- The skillchain an opener and a closer make, or nil.
+function gear.chain(openProp, closeProp)
+    return CHAINS[openProp] and CHAINS[openProp][closeProp] or nil
+end
+
 return gear
