@@ -49,9 +49,11 @@ zone-line, talk, shop, trade, synthesis and death-menu packets, and the AI state
 * **No multi-day soak yet.**
 * **Gil from drops** is logged by the bots; the server audits only vendor sales and purchases.
 
+Clean-up: the 982 scale-test bots and the M1 test character were deleted on your instruction (24 Oct),
+after a database backup (`db-20261024-073309-pre-delete-scalebots.sql`). Server audit tables keep their
+history.
+
 ## Decisions for you
-* **Scale-test data:** the 982 scale-test bots and the M1 test character are disabled, not deleted. Keep
-  or delete?
 * **When to grow the population:** the code is ready for 500–1,000. Raise the population with
   `brain.grow(target)` and keep them enabled (I can make this a setting).
 

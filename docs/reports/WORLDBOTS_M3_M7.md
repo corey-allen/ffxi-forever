@@ -2,7 +2,8 @@
 
 Dates: 23–24 Oct 2026. The figures are the server's own data: the `worldbots_log` decision trail,
 `audit_vendor`, `char_skills` and `accounts_parties`. Population: the 18 development bots. M7 adds up to
-1,000 bots for load tests; those 982 extra bots are disabled now (kept in the database).
+1,000 bots for load tests; those 982 extra bots and the M1 test character were deleted afterwards on the
+owner's instruction (backup first: `db-20261024-073309-pre-delete-scalebots.sql`).
 
 **Design change (owner, 24 Oct):** bots solo until level 12, then group in parties and hunt at exp camps in
 zones where exp camps exist. It is implemented:
@@ -126,5 +127,3 @@ headroom.**
   bot is above level 8.
 * **No ships or airships:** six leveling zones are left out until bots can take boats.
 * **No multi-day soak.**
-* **Pending from you:** the M1 test character Valfroy and the 982 scale-test bots are disabled, not
-  deleted. Deleting them is your call.
