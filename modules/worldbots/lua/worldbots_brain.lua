@@ -12,19 +12,28 @@ require('modules/module_utils')
 local m = Module:new('worldbots_brain')
 
 local context = require('modules/worldbots/brain/context')
+require('modules/worldbots/brain/perf') -- M7: shared zone scans for Nate's threat check
 local brain   = require('modules/worldbots/brain/brain')
-require('modules/worldbots/brain/economy')  -- M5: selling and shopping activities
-require('modules/worldbots/brain/crafting') -- M6: gathering and crafting activities
+local economy = require('modules/worldbots/brain/economy')  -- M5: selling and shopping
+local crafting = require('modules/worldbots/brain/crafting') -- M6: gathering and crafting
+
+brain.activities.shop = economy.activity
+for name, activity in pairs(crafting.activities or {}) do
+    brain.activities[name] = activity
+end
 
 xi.worldbots              = xi.worldbots or {}
 xi.worldbots.brain        = brain
 xi.worldbots.context      = context
+xi.worldbots.economy      = economy
+xi.worldbots.crafting     = crafting
 xi.worldbots.activateFor  = context.activateFor
+-- Looked up on every call (not captured), so a development hot reload of the brain takes effect.
 xi.worldbots.onWorldTick  = function()
-    brain.worldTick()
+    xi.worldbots.brain.worldTick()
 end
 xi.worldbots.onArrive     = function(bot, fromZone)
-    brain.onArrive(bot, fromZone)
+    xi.worldbots.brain.onArrive(bot, fromZone)
 end
 
 -- Every bot tick: make the bot's party context current, run Nate's AI, then the brain.
@@ -35,8 +44,9 @@ m:addOverride('xi.singleplayer.bots.onBotTick', function(entity, mode)
     if super then
         super(entity, mode)
     end
-    if entity ~= nil and brain.recs[entity:getID()] then
-        local ok, err = pcall(brain.think, entity)
+    local b = xi.worldbots.brain
+    if entity ~= nil and b.recs[entity:getID()] then
+        local ok, err = pcall(b.think, entity)
         if not ok then
             print('[worldbots] think(' .. entity:getName() .. '): ' .. tostring(err))
         end

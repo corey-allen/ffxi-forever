@@ -33,6 +33,7 @@
 #include "utils/charutils.h"
 #include "utils/zoneutils.h"
 #include "worldbots_hooks.h"
+#include "notoriety_container.h"
 #include "zone.h"
 
 #include <algorithm>
@@ -51,6 +52,26 @@ std::map<uint32, BotState> g_state; // charId -> state, spawned bots only
 TickStats                  g_tickStats;
 
 constexpr auto kPersistEvery = 60s;
+constexpr auto kIdleTickEvery = 1000ms; // Lua tick interval for a bot with nothing to fight (M7)
+
+// In a fight, or someone in its party is: the AI needs every zone tick (heals, interrupts, skillchains).
+auto inCombat(CCharEntity* PChar) -> bool
+{
+    const auto busy = [](CBattleEntity* PMember)
+    {
+        return PMember->PAI->IsEngaged() || (PMember->PNotorietyContainer && PMember->PNotorietyContainer->hasEnmity());
+    };
+    if (busy(PChar))
+    {
+        return true;
+    }
+    bool partyBusy = false;
+    if (PChar->PParty != nullptr)
+    {
+        PChar->ForParty([&](CBattleEntity* PMember) { partyBusy = partyBusy || (PMember != PChar && PMember->getZone() == PChar->getZone() && busy(PMember)); });
+    }
+    return partyBusy;
+}
 std::map<uint32, std::chrono::steady_clock::time_point> g_nextPersist;
 
 auto sessions() -> MapSessionContainer&
@@ -387,6 +408,23 @@ void tickZoneBots(CZone* PZone)
     }
     const auto now = std::chrono::steady_clock::now();
 
+    // M7: zone tick cadence where bots are (does the zone keep its 400 ms rhythm under load?).
+    static std::map<uint16, std::chrono::steady_clock::time_point> lastTick;
+    auto& last = lastTick[static_cast<uint16>(PZone->GetID())];
+    if (last.time_since_epoch().count() != 0 && PZone->GetZoneEntities() != nullptr)
+    {
+        const auto gapMs = static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count());
+        bool       hasBot = false;
+        PZone->ForEachChar([&](CCharEntity* PChar) { hasBot = hasBot || PChar->m_worldbot; });
+        if (hasBot)
+        {
+            g_tickStats.zoneTicks++;
+            g_tickStats.zoneGapSumMs += gapMs;
+            g_tickStats.zoneGapMaxMs = std::max(g_tickStats.zoneGapMaxMs, gapMs);
+        }
+    }
+    last = now;
+
     std::vector<CCharEntity*> due;
     PZone->ForEachChar(
         [&](CCharEntity* PChar)
@@ -404,6 +442,15 @@ void tickZoneBots(CZone* PZone)
             {
                 g_nextPersist[PChar->id] = now + kPersistEvery;
                 PChar->setPersist(CharPersist::Position | CharPersist::Effects | CharPersist::Equip);
+            }
+            // M7: out of combat the AI and the brain have nothing that needs 400 ms precision.
+            if (!inCombat(PChar))
+            {
+                if (now < st->nextIdleTick)
+                {
+                    return;
+                }
+                st->nextIdleTick = now + kIdleTickEvery;
             }
             due.push_back(PChar);
         });

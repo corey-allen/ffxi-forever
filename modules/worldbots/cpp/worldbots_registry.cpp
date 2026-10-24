@@ -213,6 +213,9 @@ void registerRegistryLuaApi()
         out["tickCalls"] = stats.calls;
         out["tickUs"]    = stats.micros;
         out["maxTickUs"] = stats.maxMicros;
+        out["zoneTicks"] = stats.zoneTicks;
+        out["zoneGapMaxMs"] = stats.zoneGapMaxMs;
+        out["zoneGapAvgMs"] = stats.zoneTicks > 0 ? stats.zoneGapSumMs / stats.zoneTicks : 0;
         return out;
     });
 

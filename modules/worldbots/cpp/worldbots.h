@@ -19,6 +19,7 @@
 
 #include "common/cbasetypes.h"
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -46,6 +47,7 @@ struct BotState
     uint8   tickPriority{ 255 }; // lower ticks earlier within a zone (healers first)
     uint8   aggroMode{ 1 };      // 1 = Full: monsters treat the bot like any player (no immunity)
     bool    spawnFinalized{ false };
+    std::chrono::steady_clock::time_point nextIdleTick{}; // M7: idle bots tick Lua about once a second
 };
 
 struct Placement
@@ -96,6 +98,9 @@ struct TickStats
     uint64 calls{ 0 };
     uint64 micros{ 0 };
     uint64 maxMicros{ 0 };
+    uint64 zoneTicks{ 0 };      // zone ticks of zones with bots in them
+    uint64 zoneGapMaxMs{ 0 };   // longest gap between two ticks of one such zone (nominal 400 ms)
+    uint64 zoneGapSumMs{ 0 };
 };
 auto takeTickStats() -> TickStats;
 void tickZoneBots(CZone* PZone);

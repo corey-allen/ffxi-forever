@@ -76,9 +76,13 @@ areas.HOME =
 
 -- Monster levels worth hunting: solo stays at or below its level (Even Match and lower,
 -- above Too Weak); a party takes Tough to Incredibly Tough, as 2006 parties did.
-function areas.levelWindow(level, inParty)
+-- caster: a solo mage (melee is weak until it has bought its spells) stays at or below its level.
+function areas.levelWindow(level, inParty, caster)
     if inParty then
         return level, level + 4
+    end
+    if caster then
+        return math.max(1, level - 4), level
     end
     if level <= 3 then
         return 1, level + 1

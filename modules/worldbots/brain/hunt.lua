@@ -28,9 +28,57 @@ function hunt.release(mobId, owner)
     end
 end
 
+-- One scan of a zone's monsters every 2 s, shared by every bot hunting there (M7: with dozens of bots per
+-- zone, each scanning hundreds of monsters on every pick was the largest per-tick cost).
+local snapshots = {}
+
+function hunt.snapshot(zone)
+    local id = zone:getID()
+    local s  = snapshots[id]
+    local t  = os.clock()
+    if s and t - s.at < 2.0 then
+        return s
+    end
+    s = { at = t, mobs = {} }
+    for _, mob in ipairs(zone:getMobs()) do
+        if mob:isSpawned() and mob:isAlive() then
+            table.insert(s.mobs, { mob = mob, id = mob:getID(), lvl = mob:getMainLvl(), x = mob:getXPos(), y = mob:getYPos(), z = mob:getZPos(),
+                                   aggressive = mob:worldbotIsAggressive() })
+        end
+    end
+    snapshots[id] = s
+    return s
+end
+
 local function claimedByOther(mobId, owner, now)
     local c = hunt.claims[mobId]
     return c ~= nil and c.owner ~= owner and now - c.at < 300
+end
+
+-- Aggressive monsters too strong for the bot (above maxLevel + 1): { { x, z }, ... } to keep away from.
+function hunt.dangers(bot, maxLevel)
+    local out  = {}
+    local zone = bot:getZone()
+    if zone == nil then
+        return out
+    end
+    for _, m in ipairs(hunt.snapshot(zone).mobs) do
+        if m.aggressive and m.lvl > maxLevel + 1 then
+            table.insert(out, { x = m.x, z = m.z })
+        end
+    end
+    return out
+end
+
+local DANGER_RADIUS = 22 -- yalms: beyond sight and hearing range of starter-zone monsters
+
+function hunt.isSafe(dangers, x, z)
+    for _, d in ipairs(dangers) do
+        if sq(d.x - x) + sq(d.z - z) < sq(DANGER_RADIUS) then
+            return false
+        end
+    end
+    return true
 end
 
 -- Monsters in the bot's zone that are alive, unclaimed and in the level window, nearest first.
@@ -44,13 +92,15 @@ function hunt.candidates(bot, minLevel, maxLevel, anchor, owner, now)
     if anchor then
         ax, az = anchor.x, anchor.z
     end
-    local out = {}
-    for _, mob in ipairs(zone:getMobs()) do
-        if mob:isSpawned() and mob:isAlive() and not mob:isEngaged() and mob:getMainLvl() >= minLevel and mob:getMainLvl() <= maxLevel
-           and not (owner and claimedByOther(mob:getID(), owner, now)) then
-            local d2 = sq(mob:getXPos() - ax) + sq(mob:getZPos() - az)
-            if d2 <= sq(SEARCH_RADIUS) and math.abs(mob:getYPos() - bot:getYPos()) < 15 then
-                table.insert(out, { mob = mob, d2 = d2 })
+    local out     = {}
+    local dangers = hunt.dangers(bot, maxLevel)
+    local by      = bot:getYPos()
+    for _, m in ipairs(hunt.snapshot(zone).mobs) do
+        if m.lvl >= minLevel and m.lvl <= maxLevel and not (owner and claimedByOther(m.id, owner, now)) then
+            local d2 = sq(m.x - ax) + sq(m.z - az)
+            if d2 <= sq(SEARCH_RADIUS) and math.abs(m.y - by) < 15 and hunt.isSafe(dangers, m.x, m.z)
+               and m.mob:isAlive() and not m.mob:isEngaged() then -- live checks only for the few nearby
+                table.insert(out, { mob = m.mob, d2 = d2 })
             end
         end
     end
@@ -64,9 +114,8 @@ function hunt.zoneScore(zone, minLevel, maxLevel)
         return 0
     end
     local n = 0
-    for _, mob in ipairs(zone:getMobs()) do
-        local lv = mob:getMainLvl()
-        if lv >= minLevel and lv <= maxLevel then
+    for _, m in ipairs(hunt.snapshot(zone).mobs) do
+        if m.lvl >= minLevel and m.lvl <= maxLevel then
             n = n + 1
         end
     end
@@ -115,7 +164,8 @@ function hunt.check(mem, bot, now)
         return 'lost'
     end
     if bot:isEngaged() or (mob and mob:isEngaged() and mob:getTarget() and mob:getTarget():getID() == bot:getID()) then
-        f.engaged = true
+        f.engaged    = true
+        f.lastActive = now
     end
     if mob == nil or not mob:isAlive() then
         if not f.engaged then
@@ -134,6 +184,8 @@ function hunt.check(mem, bot, now)
         end
     elseif now - f.startAt > FIGHT_TIMEOUT then
         return 'timeout'
+    elseif now - (f.lastActive or f.startAt) > 20 then
+        return 'disengaged' -- neither the bot nor the monster has been fighting the other for a while
     end
     return nil
 end

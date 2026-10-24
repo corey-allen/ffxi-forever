@@ -88,6 +88,28 @@ function population.adoptOrphans(log, only)
     return adopted
 end
 
+-- Grow the population to `target` bots (M7): new bots get a random nation and starting job and that
+-- nation's usual race for the job. Created through the same character creation, `perCall` at a time
+-- so a large step does not stall a tick.
+function population.grow(rows, target, nations, jobs, perCall, log)
+    local created = 0
+    local count   = #rows
+    while count < target and created < (perCall or 10) do
+        local nation = nations[math.random(#nations)]
+        local job    = jobs[math.random(#jobs)]
+        local charId, name = population.create(nation, job, population.raceFor(nation, job), nil)
+        if charId == nil then
+            break
+        end
+        created = created + 1
+        count   = count + 1
+        if log then
+            log(string.format('created %s (charId %d) nation %d job %d', name, charId, nation, job))
+        end
+    end
+    return created
+end
+
 -- Make sure every (nation, job) slot of the development population has a bot.
 function population.seed(rows, nations, jobs, log)
     local have = {}

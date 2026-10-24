@@ -25,12 +25,16 @@ local function deepcopy(value)
     return out
 end
 
--- Nate's defaults, captured before anything changes them (the brain loads after modules/worldbots/bots).
-local template = deepcopy(bots.alliance)
-template.bot   = {}
-
--- Current when no world bot is being processed (for example a GM's test alliance).
-local idle     = bots.alliance
+-- Nate's defaults, captured once before anything changes them (the brain loads after modules/worldbots/bots).
+-- Kept on xi.worldbots so a development reload of this file does not capture a live party's table instead.
+xi.worldbots = xi.worldbots or {}
+if xi.worldbots.allianceTemplate == nil then
+    xi.worldbots.allianceTemplate     = deepcopy(bots.alliance)
+    xi.worldbots.allianceTemplate.bot = {}
+    xi.worldbots.idleAlliance         = bots.alliance -- current when no world bot is being processed
+end
+local template = xi.worldbots.allianceTemplate
+local idle     = xi.worldbots.idleAlliance
 
 context.byKey  = {} -- key -> alliance table
 context.keyOf  = {} -- charId -> key
@@ -103,7 +107,11 @@ function context.form(key, members, options)
     for _, m in ipairs(members) do
         local id = m.entity:getID()
         context.activateFor(id)
-        bots.ensure_bot(id)
+        local st = bots.ensure_bot(id)
+        -- Lot on every drop (Nate's "Everything" group): bots keep and sell their loot, and a full bag passes.
+        if bots.ai_lot and bots.ai_lot.ALL_GROUP then
+            st.activeGroups[bots.ai_lot.ALL_GROUP] = true
+        end
         bots.onSetRole(m.entity, m.role)
     end
     return a

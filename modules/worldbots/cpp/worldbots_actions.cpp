@@ -17,6 +17,7 @@
 #include "common/logging.h"
 #include "common/lua.h"
 #include "entities/char_entity.h"
+#include "entities/mob_entity.h"
 #include "entities/npc_entity.h"
 #include "item_container.h"
 #include "items/item_equipment.h"
@@ -105,9 +106,9 @@ void registerActionsLuaApi()
         GP_CLI_COMMAND_EVENTEND packet{};
         packet.UniqueNo = PChar->currentEvent->targetEntity != nullptr ? PChar->currentEvent->targetEntity->id : PChar->id;
         packet.ActIndex = PChar->currentEvent->targetEntity != nullptr ? PChar->currentEvent->targetEntity->targid : PChar->targid;
-        packet.EndPara  = option.value_or(0);
-        packet.EventNum = static_cast<uint16>(PChar->currentEvent->eventId);
-        packet.Mode     = 0;
+        packet.EndPara   = option.value_or(0);
+        packet.EventPara = static_cast<uint16>(PChar->currentEvent->eventId); // the handler's event id
+        packet.Mode      = static_cast<uint16>(GP_CLI_COMMAND_EVENTEND_MODE::End);
         return sendAsClient(PChar, packet, 0x05B, "event end");
     };
 
@@ -210,6 +211,13 @@ void registerActionsLuaApi()
         }
         packet.Items = n;
         return sendAsClient(asChar(L), packet, 0x096, "synthesis");
+    };
+
+    // Whether a monster attacks on sight or sound (read-only; for keeping low-level bots out of its way).
+    E["worldbotIsAggressive"] = [](CLuaBaseEntity* L) -> bool
+    {
+        auto* PEntity = L != nullptr ? L->GetBaseEntity() : nullptr;
+        return PEntity != nullptr && PEntity->objtype == TYPE_MOB && static_cast<CMobEntity*>(PEntity)->m_Aggro;
     };
 
     E["worldbotIsCrafting"] = [](CLuaBaseEntity* L) -> bool

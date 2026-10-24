@@ -11,7 +11,7 @@ local config =
 
     -- 'schedule': bots log in and out on their own schedules (production).
     -- 'always':   every enabled bot stays online (development and soak tests).
-    SCHEDULE_MODE = 'schedule',
+    SCHEDULE_MODE = 'always', -- SOAK: back to 'schedule' when the M3-M7 soak ends
 
     -- At most this many bots log in per world tick (2.4 s), so a restart does not stall the zone threads.
     MAX_LOGINS_PER_TICK = 2,
@@ -33,9 +33,9 @@ local config =
     PARTY_LEVEL_SPREAD = 3,
     PARTY_MIN_LEVEL = 10, -- solo below this, as players did in 2006
 
-    -- Rest when out of combat and below these, stand at full.
-    REST_HPP = 50,
-    REST_MPP = 40,
+    -- Rest before the next fight when below these (out of combat), stand at full.
+    REST_HPP = 80,
+    REST_MPP = 60,
 
     -- Seconds a dead bot waits (for a raise that a party member may cast) before returning home.
     HOMEPOINT_AFTER_SECONDS = 60,

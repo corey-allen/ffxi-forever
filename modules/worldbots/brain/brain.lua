@@ -18,6 +18,7 @@ local population = require('modules/worldbots/brain/population')
 local travel     = require('modules/worldbots/brain/travel')
 local hunt       = require('modules/worldbots/brain/hunt')
 local areas      = require('modules/worldbots/brain/areas')
+local gear       = require('modules/worldbots/brain/gear')
 local json       = require('modules/worldbots/lib/json')
 
 local bots = xi.singleplayer.bots
@@ -55,6 +56,31 @@ local PARTY_ROLE =
     [xi.job.WHM] = Role.Healer, [xi.job.BLM] = Role.Nuker, [xi.job.RDM] = Role.Rdm,
 }
 local MELEE_JOB = { [xi.job.WAR] = true, [xi.job.MNK] = true, [xi.job.THF] = true }
+local CASTER_ROLE = { [Role.Healer] = true, [Role.Nuker] = true, [Role.Rdm] = true }
+
+-- Nate's movement follows a player owner; world bots have none, so it would keep stepping a bot
+-- toward itself (and cancel /heal every tick). The brain moves world bots; Nate's AI fights.
+local function combatOnly(bot)
+    bot:setBotMode(bots.BotMode.CombatOnly)
+end
+brain.combatOnly = combatOnly
+
+-- Nate's roles stand a resting bot up once its MP is above 95% (his bots rest for MP; the player's
+-- healer covers HP). A solo world bot rests for HP too, so while the brain rests a bot for HP that
+-- rule is ignored, unless a monster is on the bot. Wrapped once, Nate's files unchanged.
+if bots.ai_util and not bots.ai_util.nateStopRest then
+    bots.ai_util.nateStopRest = bots.ai_util.stop_rest
+    bots.ai_util.stop_rest = function(bot)
+        local rec = xi.worldbots and xi.worldbots.brain and xi.worldbots.brain.recs[bot:getID()]
+        if rec and rec.mem.restingForHp and not bot:isEngaged() then
+            local threat = bots.threat and bots.threat.peelable_for and bots.threat.peelable_for(bot)
+            if threat == nil then
+                return
+            end
+        end
+        return bots.ai_util.nateStopRest(bot)
+    end
+end
 
 -----------------------------------
 -- State persistence
@@ -75,19 +101,23 @@ end
 -- Better = higher required level, which is how 2006 gear progressed.
 -----------------------------------
 function brain.equipBest(bot)
-    local best = {} -- equip slot -> { id, req }
+    -- Best item per equip slot (brain/gear.lua): the job's weapon type, then level, then damage/defense.
+    local best = {} -- slot -> { id, score }
     for _, item in ipairs(bot:worldbotInventory()) do
-        local info = WorldbotItemInfo(item.itemId)
-        if info and info.equipment and bot:canEquipItem(item.itemId, true) then
-            local key = info.slots
-            if best[key] == nil or info.reqLvl > best[key].req then
-                best[key] = { id = item.itemId, req = info.reqLvl }
+        local info  = WorldbotItemInfo(item.itemId)
+        local score = info and gear.score(bot, info)
+        if score then
+            local slot = gear.slotOf(info)
+            if best[slot] == nil or score > best[slot].score then
+                best[slot] = { id = item.itemId, score = score }
             end
         end
     end
     local equipped = {}
-    for _, e in pairs(best) do
-        bot:equipItem(e.id)
+    for slot, e in pairs(best) do
+        if bot:getEquipID(slot) ~= e.id then
+            bot:equipItem(e.id, nil, slot)
+        end
         table.insert(equipped, e.id)
     end
     return equipped
@@ -100,6 +130,8 @@ local function roleFor(rec, inParty)
     local map = inParty and PARTY_ROLE or SOLO_ROLE
     return map[rec.row.job] or Role.Tank
 end
+
+brain.roleFor = roleFor
 
 function brain.login(rec)
     local bot = WorldbotSpawnId(rec.charId)
@@ -115,6 +147,7 @@ function brain.login(rec)
         bots.bots_listeners.registered[rec.charId] = nil
     end
     bot:worldbotSetParent(rec.charId)
+    combatOnly(bot)
     context.solo(bot, roleFor(rec, false))
     local s = rec.state
     s.level  = s.level or bot:getMainLvl()
@@ -163,6 +196,7 @@ function brain.onArrive(bot, fromZone)
     end
     rec.mem.route    = nil
     rec.mem.progress = nil
+    combatOnly(bot)
     if rec.mem.party then
         brain.refreshParty(rec.mem.party)
     else
@@ -193,6 +227,26 @@ function brain.start()
     print(string.format('[worldbots] brain started: %d bots registered, schedule mode %s', #brain.list, config.SCHEDULE_MODE))
 end
 
+-- New registry rows (bots created at runtime, M7) join the brain without a restart.
+function brain.refreshRegistry()
+    local added = 0
+    for _, row in ipairs(population.load()) do
+        if brain.recs[row.charId] == nil then
+            local rec = { charId = row.charId, row = row, state = row.state, mem = {}, online = WorldbotIsOnline(row.charId) }
+            brain.recs[row.charId] = rec
+            table.insert(brain.list, rec)
+            added = added + 1
+        end
+    end
+    return added
+end
+
+-- Grow the population toward `target` bots, a few per call (M7).
+function brain.grow(target, perCall)
+    local created = population.grow(brain.list, target, config.SEED_NATIONS, config.SEED_JOBS, perCall)
+    return created, brain.refreshRegistry()
+end
+
 -----------------------------------
 -- Parties (M4): bots of one nation at similar levels team up, as 2006 players did from level 10.
 -----------------------------------
@@ -210,10 +264,12 @@ local function partyCandidates()
 end
 
 -- Skillchain pairs Nate's AI can run: open with the first, close with the second (both level-1 weapon skills).
+-- (The WAR closes with an axe: brain/gear.lua makes axes its preferred weapon.)
 local SC_PAIRS =
 {
-    { open = xi.job.MNK, openWS = 'Combo', close = xi.job.WAR, closeWS = 'Raging Axe' },     -- Impaction > Detonation
+    { open = xi.job.MNK, openWS = 'Combo',      close = xi.job.WAR, closeWS = 'Raging Axe' }, -- Impaction > Detonation
     { open = xi.job.THF, openWS = 'Wasp Sting', close = xi.job.WAR, closeWS = 'Raging Axe' }, -- Scission > Detonation
+    { open = xi.job.RDM, openWS = 'Fast Blade', close = xi.job.WAR, closeWS = 'Raging Axe' }, -- Scission > Detonation
 }
 
 function brain.formParty(group)
@@ -239,6 +295,7 @@ function brain.formParty(group)
         m.rec.mem.party = key
         m.rec.mem.fight = nil
         m.bot:worldbotSetParent(leader.rec.charId)
+        combatOnly(m.bot)
     end
     local sc = {}
     for i, p in ipairs(SC_PAIRS) do
@@ -334,8 +391,9 @@ function brain.worldTick()
     if not brain.started then
         brain.start()
     end
-    local t      = os.date('*t')
-    local logins = 0
+    local t       = os.date('*t')
+    local logins  = 0
+    local logouts = 0
     local online = 0
     for _, rec in ipairs(brain.list) do
         if rec.online then
@@ -352,7 +410,12 @@ function brain.worldTick()
                 end
             end
         elseif not want and rec.online then
-            brain.logout(rec, 'schedule')
+            rec.mem.leaving = true -- finish the current fight, start nothing new
+        end
+        if not want and rec.online and logouts < config.MAX_LOGINS_PER_TICK * 2 then
+            if brain.logout(rec, rec.row.enabled and 'schedule' or 'disabled') then
+                logouts = logouts + 1
+            end
         end
         if rec.online and now() - (rec.lastSave or 0) >= config.STATE_SAVE_SECONDS then
             save(rec)
@@ -419,23 +482,33 @@ local function finishFight(rec, bot, result, t)
     end
 end
 
--- Hand a monster to the AI: walk close, set the party target, engage.
+-- Hand a monster to the AI: walk close, set the party target, engage; keep in range while Nate's AI fights.
 local function fightStep(rec, bot, t)
     local f   = rec.mem.fight
     local mob = GetMobByID(f.mobId)
-    if mob == nil then
+    if mob == nil or not mob:isAlive() then
         return
     end
+    local d      = travel.dist(bot, mob:getXPos(), mob:getYPos(), mob:getZPos())
+    local role   = context.of(rec.charId) and context.of(rec.charId).roleMap[rec.charId] or Role.Tank
+    -- Casters in a party (level 10+) keep their distance; everyone else fights in melee range.
+    local caster = rec.mem.party ~= nil and CASTER_ROLE[role] and bot:getMainLvl() >= 10
+    local reach  = caster and 15 or 2.5
+
     if bot:isEngaged() then
-        return -- Nate's AI fights; legacy battle formation chases the target
+        if d > reach + 1 then
+            travel.walkTo(bot, rec.mem, mob:getXPos(), mob:getYPos(), mob:getZPos(), reach, t)
+        else
+            bot:lookAt(mob:getPos())
+        end
+        return
     end
-    local d = travel.dist(bot, mob:getXPos(), mob:getYPos(), mob:getZPos())
-    if d > 6 then
-        travel.walkTo(bot, rec.mem, mob:getXPos(), mob:getYPos(), mob:getZPos(), 5, t)
+    if d > math.max(reach, 6) then
+        travel.walkTo(bot, rec.mem, mob:getXPos(), mob:getYPos(), mob:getZPos(), math.max(reach, 5), t)
         return
     end
     bots.set_alliance_target(f.mobId)
-    if MELEE_JOB[rec.row.job] or bot:getMainJob() == xi.job.RDM or bot:getMainLvl() < 10 or not mob:isEngaged() then
+    if not caster then
         bot:engage(mob:getTargID())
     end
 end
@@ -454,7 +527,11 @@ end
 local function huntStep(rec, bot, t)
     local s     = rec.state
     local level = bot:getMainLvl()
-    if s.campZone == nil or s.campLevel == nil or math.abs(level - s.campLevel) >= 3 then
+    local inBand = false
+    for _, z in ipairs(areas.candidates(rec.row.nation, level)) do
+        inBand = inBand or z == s.campZone
+    end
+    if s.campZone == nil or s.campLevel == nil or not inBand or math.abs(level - s.campLevel) >= 3 then
         chooseCamp(rec, bot)
     end
     if s.campZone == nil then
@@ -476,7 +553,8 @@ local function huntStep(rec, bot, t)
         return
     end
     rec.mem.nextPick = t + 3
-    local minLv, maxLv = areas.levelWindow(level, rec.mem.party ~= nil)
+    local casterJob    = rec.row.job == xi.job.WHM or rec.row.job == xi.job.BLM or rec.row.job == xi.job.RDM
+    local minLv, maxLv = areas.levelWindow(level, rec.mem.party ~= nil, casterJob)
     for _, c in ipairs(hunt.candidates(bot, minLv, maxLv, nil, claimOwner(rec), t)) do
         local skipUntil = rec.mem.skip and rec.mem.skip[c.mob:getID()]
         if skipUntil == nil or t >= skipUntil then
@@ -486,10 +564,18 @@ local function huntStep(rec, bot, t)
             return
         end
     end
-    -- Nothing here: wander toward the zone's other side to find spawns.
+    -- Nothing here: wander to find spawns, never toward aggressive monsters too strong for the bot.
     if rec.mem.wander == nil or t > rec.mem.wander.untilT then
-        local a = math.random() * math.pi * 2
-        rec.mem.wander = { x = bot:getXPos() + math.cos(a) * 60, y = bot:getYPos(), z = bot:getZPos() + math.sin(a) * 60, untilT = t + 40 }
+        local dangers = hunt.dangers(bot, maxLv)
+        for _ = 1, 8 do
+            local a = math.random() * math.pi * 2
+            local x, z = bot:getXPos() + math.cos(a) * 60, bot:getZPos() + math.sin(a) * 60
+            if hunt.isSafe(dangers, x, z) then
+                rec.mem.wander = { x = x, y = bot:getYPos(), z = z, untilT = t + 40 }
+                break
+            end
+        end
+        rec.mem.wander = rec.mem.wander or { x = bot:getXPos(), y = bot:getYPos(), z = bot:getZPos(), untilT = t + 20 }
     end
     travel.walkTo(bot, rec.mem, rec.mem.wander.x, rec.mem.wander.y, rec.mem.wander.z, 5, t)
 end
@@ -509,7 +595,29 @@ local function followLeader(rec, bot, t)
     end
 end
 
+-- Time spent in think (M7 load reports): { calls, total, max } in seconds, reset by brain.takeProfile().
+brain.prof = { calls = 0, total = 0, max = 0 }
+
+function brain.takeProfile()
+    local p = brain.prof
+    brain.prof = { calls = 0, total = 0, max = 0 }
+    return p
+end
+
+local thinkImpl
+
 function brain.think(bot)
+    local started = os.clock()
+    thinkImpl(bot)
+    local dt = os.clock() - started
+    local p  = brain.prof
+    p.calls, p.total = p.calls + 1, p.total + dt
+    if dt > p.max then
+        p.max = dt
+    end
+end
+
+thinkImpl = function(bot)
     local rec = brain.recs[bot:getID()]
     if rec == nil or not rec.online then
         return
@@ -584,6 +692,7 @@ function brain.think(bot)
         if result then
             finishFight(rec, bot, result, t)
         else
+            rec.mem.restingForHp = nil
             if bot:isBotResting() then
                 bot:stopBotResting()
             end
@@ -593,16 +702,25 @@ function brain.think(bot)
     end
 
     -- Rest between fights.
-    if bot:isBotResting() then
+    if rec.mem.restingForHp then
         if rested(bot) then
+            rec.mem.restingForHp = nil
             bot:stopBotResting()
-            log(rec, 'rest', string.format('rested to hp %d/%d mp %d/%d', bot:getHP(), bot:getMaxHP(), bot:getMP(), bot:getMaxMP()))
+            log(rec, 'rest', string.format('rested to hp %d/%d mp %d/%d in %ds', bot:getHP(), bot:getMaxHP(), bot:getMP(), bot:getMaxMP(), t - (rec.mem.restStart or t)))
+        elseif not bot:isBotResting() then
+            bot:startBotResting() -- stood up by something else (a monster, a role); sit again
         end
         return
     end
     if needsRest(bot) and not bot:isEngaged() then
+        rec.mem.restingForHp = true
+        rec.mem.restStart    = t
         bot:startBotResting()
         return
+    end
+
+    if rec.mem.leaving then
+        return -- logging out at the next world tick
     end
 
     -- Activities other than hunting (selling, shopping, gathering, crafting).
