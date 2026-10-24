@@ -23,13 +23,22 @@ local SECOND =
     [xi.nation.WINDURST] = { Z.TAHRONGI_CANYON, Z.WEST_SARUTABARUTA },
 }
 
--- { minLevel, maxLevel, zones } shared by all nations above the starter bands. Only zones reachable on
--- foot over zone lines: bots do not take ships or airships yet, so Yuhtunga, Yhoator, Ifrit's Cauldron,
--- Sea Serpent Grotto and the Tavnazian zones are left out (tests.lua checks every zone is reachable).
+-- Solo at 10-11, the last levels before parties (owner decision: solo until 12).
+local THIRD =
+{
+    [xi.nation.SANDORIA] = { Z.LA_THEINE_PLATEAU, Z.JUGNER_FOREST },
+    [xi.nation.BASTOK]   = { Z.KONSCHTAT_HIGHLANDS, Z.GUSGEN_MINES },
+    [xi.nation.WINDURST] = { Z.TAHRONGI_CANYON, Z.BUBURIMU_PENINSULA },
+}
+
+-- Exp-camp zones from level 12, where parties form (owner decision): { minLevel, maxLevel, zones }, shared by
+-- all nations. Only zones reachable on foot over zone lines: bots do not take ships or airships yet, so
+-- Yuhtunga, Yhoator, Ifrit's Cauldron, Sea Serpent Grotto and the Tavnazian zones are left out (tests.lua
+-- checks every zone is reachable).
 local BANDS =
 {
-    { 10, 15, { Z.VALKURM_DUNES, Z.BUBURIMU_PENINSULA } },
-    { 15, 20, { Z.QUFIM_ISLAND, Z.VALKURM_DUNES, Z.BUBURIMU_PENINSULA } },
+    { 12, 16, { Z.VALKURM_DUNES, Z.BUBURIMU_PENINSULA } },
+    { 16, 20, { Z.QUFIM_ISLAND, Z.VALKURM_DUNES, Z.BUBURIMU_PENINSULA } },
     { 20, 25, { Z.QUFIM_ISLAND, Z.JUGNER_FOREST, Z.PASHHOW_MARSHLANDS, Z.MERIPHATAUD_MOUNTAINS } },
     { 25, 30, { Z.ROLANBERRY_FIELDS, Z.SAUROMUGUE_CHAMPAIGN, Z.BATALLIA_DOWNS, Z.CRAWLERS_NEST } },
     { 30, 35, { Z.CRAWLERS_NEST, Z.GARLAIGE_CITADEL, Z.EASTERN_ALTEPA_DESERT } },
@@ -58,6 +67,22 @@ function areas.candidates(nation, level)
         end
         return list
     end
+    if level < 12 then
+        local list = {}
+        for _, z in ipairs(THIRD[nation] or {}) do
+            table.insert(list, z)
+        end
+        for _, z in ipairs(SECOND[nation] or {}) do
+            table.insert(list, z)
+        end
+        return list
+    end
+    return areas.campZones(level)
+end
+
+-- Exp-camp zones for a party whose lowest member is at this level (12 and up).
+function areas.campZones(level)
+    level = math.max(level, 12)
     for _, band in ipairs(BANDS) do
         if level >= band[1] and level < band[2] then
             return band[3]

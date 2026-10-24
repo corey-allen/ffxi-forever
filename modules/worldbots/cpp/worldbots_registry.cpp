@@ -22,6 +22,7 @@
 #include "data/datasets/zones/settings/dataset.h"
 #include "data/loader.h"
 #include "entities/char_entity.h"
+#include "party.h"
 #include "lua/lua_base_entity.h"
 #include "utils/zoneutils.h"
 #include "zone.h"
@@ -235,6 +236,24 @@ void registerRegistryLuaApi()
         if (auto* st = state(asChar(L)))
         {
             st->parentCharId = parentCharId;
+        }
+    };
+
+    // Leave the party (a last member's party is disbanded), as /pcmd leave does.
+    E["worldbotLeaveParty"] = [](CLuaBaseEntity* L)
+    {
+        auto* PChar = asChar(L);
+        if (PChar == nullptr || PChar->PParty == nullptr)
+        {
+            return;
+        }
+        if (PChar->PParty->members.size() <= 1)
+        {
+            PChar->PParty->DisbandParty();
+        }
+        else
+        {
+            PChar->PParty->RemoveMember(PChar);
         }
     };
 

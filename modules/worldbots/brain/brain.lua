@@ -263,7 +263,7 @@ local function partyCandidates()
     local byNation = {}
     for _, rec in ipairs(brain.list) do
         local bot = rec.online and WorldbotGet(rec.charId) or nil
-        if bot and not rec.mem.party and not rec.mem.fight and not bot:isDead() and not bot:worldbotIsZoning()
+        if bot and not rec.mem.party and not bot:isDead() and not bot:worldbotIsZoning()
            and bot:getMainLvl() >= config.PARTY_MIN_LEVEL and not rec.mem.activity then
             byNation[rec.row.nation] = byNation[rec.row.nation] or {}
             table.insert(byNation[rec.row.nation], { rec = rec, bot = bot })
@@ -385,6 +385,11 @@ function brain.leaveParty(rec, reason)
             log(other, 'party', 'left ' .. key .. ': ' .. reason)
         end
     end
+    -- The leader's engine party is left with only the leader: disband it.
+    local leader = WorldbotGet(tonumber(key:match('%d+')))
+    if leader and leader.worldbotLeaveParty then
+        leader:worldbotLeaveParty()
+    end
 end
 
 -- A party's members: { { rec, bot }, ... } (online, in the brain).
@@ -402,7 +407,17 @@ local function partyMembers(key)
 end
 
 -- An eligible solo bot joins its nation's party with room, when its level fits (as players filled a slot).
-local function joinExisting(c)
+local joinExisting
+
+-- A solo bot about to start an errand looks for a party first (an invitation beats a shopping trip).
+function brain.tryJoin(rec, bot)
+    if rec.mem.party or bot:getMainLvl() < config.PARTY_MIN_LEVEL or bot:getFreeSlotsCount() <= 4 then
+        return false
+    end
+    return joinExisting({ rec = rec, bot = bot })
+end
+
+joinExisting = function(c)
     for _, other in ipairs(brain.list) do
         local key = other.mem.party
         if key and other.row.nation == c.rec.row.nation and key == 'party:' .. other.charId then -- each party once, via its leader
@@ -433,6 +448,21 @@ local function joinExisting(c)
 end
 
 function brain.updateParties()
+    -- Parties whose weakest member is below the party level break up (solo until then).
+    for _, rec in ipairs(brain.list) do
+        if rec.mem.party and rec.mem.party == 'party:' .. rec.charId then
+            local lowest = math.huge
+            for _, other in ipairs(brain.list) do
+                local b = other.mem.party == rec.mem.party and WorldbotGet(other.charId) or nil
+                if b then
+                    lowest = math.min(lowest, b:getMainLvl())
+                end
+            end
+            if lowest < config.PARTY_MIN_LEVEL then
+                brain.leaveParty(rec, string.format('party level is %d (solo until %d)', lowest, config.PARTY_MIN_LEVEL))
+            end
+        end
+    end
     for _, group in pairs(partyCandidates()) do
         local rest = {}
         for _, c in ipairs(group) do
@@ -656,7 +686,27 @@ local function huntStep(rec, bot, t)
     rec.mem.nextPick = t + 3
     local casterJob    = rec.row.job == xi.job.WHM or rec.row.job == xi.job.BLM or rec.row.job == xi.job.RDM
     local minLv, maxLv = areas.levelWindow(level, rec.mem.party ~= nil, casterJob)
-    for _, c in ipairs(hunt.candidates(bot, minLv, maxLv, nil, claimOwner(rec), t)) do
+
+    -- A party settles at the zone's exp camp and hunts around it.
+    local camp, radius = nil, nil
+    if rec.mem.party then
+        camp = rec.mem.camp
+        if camp == nil or camp.zone ~= bot:getZoneID() or t >= camp.untilT then
+            local spot = hunt.campSpot(bot, minLv, maxLv)
+            if spot then
+                camp = { zone = bot:getZoneID(), x = spot.x, y = spot.y, z = spot.z, untilT = t + 600 }
+                rec.mem.camp = camp
+                log(rec, 'camp', string.format('exp camp in zone %d at %.0f %.0f %.0f (%d monsters lv%d-%d around)', camp.zone, camp.x, camp.y, camp.z, spot.count, minLv, maxLv))
+            end
+        end
+        if camp and travel.dist(bot, camp.x, camp.y, camp.z) > config.CAMP_RADIUS then
+            travel.walkTo(bot, rec.mem, camp.x, camp.y, camp.z, 10, t) -- to camp first
+            return
+        end
+        radius = camp and config.CAMP_RADIUS
+    end
+
+    for _, c in ipairs(hunt.candidates(bot, minLv, maxLv, camp, claimOwner(rec), t, radius)) do
         local skipUntil = rec.mem.skip and rec.mem.skip[c.mob:getID()]
         if skipUntil == nil or t >= skipUntil then
             rec.mem.emptyPicks = 0
@@ -683,6 +733,13 @@ local function huntStep(rec, bot, t)
         return
     end
     -- Nothing here: wander to find spawns, never toward aggressive monsters too strong for the bot.
+    if camp then
+        -- Nothing up at camp right now: wait there for the next spawn, as a party did.
+        if travel.dist(bot, camp.x, camp.y, camp.z) > 15 then
+            travel.walkTo(bot, rec.mem, camp.x, camp.y, camp.z, 10, t)
+        end
+        return
+    end
     if rec.mem.wander == nil or t > rec.mem.wander.untilT then
         -- Head for where the monsters are; wander at random only when the zone has none in range at all.
         local target = hunt.nearestAnywhere(bot, minLv, maxLv)
@@ -859,6 +916,9 @@ thinkImpl = function(bot)
     end
     if isPartyLeader(rec) and t >= (rec.mem.nextActivityCheck or 0) then
         rec.mem.nextActivityCheck = t + 30
+        if rec.mem.party == nil and brain.tryJoin(rec, bot) then
+            return
+        end
         for _, name in ipairs(brain.ACTIVITY_ORDER) do
             local act = brain.activities[name]
             if act and act.choose(rec, bot, t) then

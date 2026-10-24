@@ -83,7 +83,8 @@ end
 
 -- Monsters in the bot's zone that are alive, unclaimed and in the level window, nearest first.
 -- owner/now: skip mobs another bot (or party) has claimed.
-function hunt.candidates(bot, minLevel, maxLevel, anchor, owner, now)
+function hunt.candidates(bot, minLevel, maxLevel, anchor, owner, now, radius)
+    radius = radius or SEARCH_RADIUS
     local zone = bot:getZone()
     if zone == nil then
         return {}
@@ -98,7 +99,7 @@ function hunt.candidates(bot, minLevel, maxLevel, anchor, owner, now)
     for _, m in ipairs(hunt.snapshot(zone).mobs) do
         if m.lvl >= minLevel and m.lvl <= maxLevel and not (owner and claimedByOther(m.id, owner, now)) then
             local d2 = sq(m.x - ax) + sq(m.z - az)
-            if d2 <= sq(SEARCH_RADIUS) and math.abs(m.y - by) < 15 and hunt.isSafe(dangers, m.x, m.z)
+            if d2 <= sq(radius) and math.abs(m.y - by) < 15 and hunt.isSafe(dangers, m.x, m.z)
                and m.mob:isAlive() and not m.mob:isEngaged() then -- live checks only for the few nearby
                 table.insert(out, { mob = m.mob, d2 = d2 })
             end
@@ -127,6 +128,33 @@ function hunt.nearestAnywhere(bot, minLevel, maxLevel)
         end
     end
     return best
+end
+
+-- The exp camp in a zone: the 40-yalm cell with the most monsters in the level window (away from dangers),
+-- as players camped where the right monsters were densest. Returns { x, y, z, count } or nil.
+function hunt.campSpot(bot, minLevel, maxLevel)
+    local zone = bot:getZone()
+    if zone == nil then
+        return nil
+    end
+    local dangers = hunt.dangers(bot, maxLevel)
+    local cells   = {}
+    local best    = nil
+    for _, m in ipairs(hunt.snapshot(zone).mobs) do
+        if m.lvl >= minLevel and m.lvl <= maxLevel and hunt.isSafe(dangers, m.x, m.z) then
+            local key = math.floor(m.x / 40) .. ':' .. math.floor(m.z / 40)
+            local c   = cells[key] or { n = 0, x = 0, y = 0, z = 0 }
+            c.n, c.x, c.y, c.z = c.n + 1, c.x + m.x, c.y + m.y, c.z + m.z
+            cells[key] = c
+            if best == nil or c.n > best.n then
+                best = c
+            end
+        end
+    end
+    if best == nil then
+        return nil
+    end
+    return { x = best.x / best.n, y = best.y / best.n, z = best.z / best.n, count = best.n }
 end
 
 -- How many huntable monsters a zone has for this level (whole zone), to choose a camp.
@@ -159,12 +187,9 @@ function hunt.chooseZone(nation, level, inParty, exclude)
         end
         return zone, score
     end
-    -- Parties try the party zones first, then the zones for their level (a young party camps where it can).
+    -- Parties hunt only in exp-camp zones; solo bots in the zones for their level.
     if inParty then
-        local zone, score = best(areas.candidates(nation, math.max(level, 10)))
-        if zone then
-            return zone, score
-        end
+        return best(areas.campZones(level))
     end
     return best(areas.candidates(nation, level))
 end

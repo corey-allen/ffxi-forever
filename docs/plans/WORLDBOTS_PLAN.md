@@ -26,6 +26,7 @@ Nate's code is the foundation, so we don't design these from scratch:
 | Population during development | **18 bots**: WAR, MNK, THF, WHM, BLM and RDM in each starting nation (San d'Oria, Bastok, Windurst) |
 | Long-term population | 500–1 000 concurrent, added gradually after the project is complete |
 | Grouping | Bots only with each other. Grouping with real players comes after completion |
+| Soloing and parties (24 Oct 2026) | Like real players, bots solo until level 12, then group in parties and hunt at exp camps in zones where exp camps exist |
 | Trusts | Not implemented (not 2006/2007). Nate's trust code is not imported |
 | Names | Lore-accurate for Vana'diel and Ivalice, following each race's naming style |
 | Era | 75 cap, circa 2006/2007 (the Phoenix era settings already in place) |

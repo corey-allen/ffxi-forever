@@ -11,7 +11,7 @@ local config =
 
     -- 'schedule': bots log in and out on their own schedules (production).
     -- 'always':   every enabled bot stays online (development and soak tests).
-    SCHEDULE_MODE = 'always', -- SOAK: back to 'schedule' when the M3-M7 soak ends
+    SCHEDULE_MODE = 'schedule',
 
     -- At most this many bots log in per world tick (2.4 s), so a restart does not stall the zone threads.
     MAX_LOGINS_PER_TICK = 2,
@@ -30,8 +30,11 @@ local config =
     SEED_NATIONS = { xi.nation.SANDORIA, xi.nation.BASTOK, xi.nation.WINDURST },
 
     -- Bots of one nation that are online and within this many levels form a party (M4).
+    -- Exp camps: a party hunts around the densest spot of monsters at its level in an exp-camp zone
+    -- (CAMP_RADIUS yalms), and returns there between fights.
+    CAMP_RADIUS = 60,
     PARTY_LEVEL_SPREAD = 3,
-    PARTY_MIN_LEVEL = 10, -- solo below this, as players did in 2006
+    PARTY_MIN_LEVEL = 12, -- owner decision: solo until 12, then parties at exp camps
 
     -- Rest before the next fight when below these (out of combat), stand at full.
     REST_HPP = 80,
